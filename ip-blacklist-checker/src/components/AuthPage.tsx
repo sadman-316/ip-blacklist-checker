@@ -29,23 +29,52 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
         (cred) => cred.email.toLowerCase() === trimmedEmail
       );
 
+      // Check local storage users next
       if (!matchingCredential) {
-        // Try searching in Firestore users collection
-        const usersRef = collection(db, "users");
-        const q = query(usersRef, where("email", "==", trimmedEmail));
-        const querySnapshot = await getDocs(q);
+        try {
+          const localUsersStr = localStorage.getItem("wolast_local_users");
+          if (localUsersStr) {
+            const localUsers: UserProfile[] = JSON.parse(localUsersStr);
+            const localFound = localUsers.find((u) => u.email.toLowerCase() === trimmedEmail);
+            if (localFound) {
+              matchingCredential = {
+                uid: localFound.uid,
+                email: localFound.email,
+                displayName: localFound.displayName,
+                role: localFound.role,
+                status: localFound.status,
+                createdAt: localFound.createdAt,
+                passwordHash: localFound.passwordHash || ""
+              };
+            }
+          }
+        } catch (e) {}
+      }
 
-        if (!querySnapshot.empty) {
-          const userDoc = querySnapshot.docs[0].data() as UserProfile;
-          matchingCredential = {
-            uid: userDoc.uid,
-            email: userDoc.email,
-            displayName: userDoc.displayName,
-            role: userDoc.role,
-            status: userDoc.status,
-            createdAt: userDoc.createdAt,
-            passwordHash: userDoc.passwordHash || ""
-          };
+      // Try searching in Firestore users collection with a 2s timeout
+      if (!matchingCredential) {
+        try {
+          const usersRef = collection(db, "users");
+          const q = query(usersRef, where("email", "==", trimmedEmail));
+          const querySnapshot = await Promise.race([
+            getDocs(q),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+          ]);
+
+          if (!querySnapshot.empty) {
+            const userDoc = querySnapshot.docs[0].data() as UserProfile;
+            matchingCredential = {
+              uid: userDoc.uid,
+              email: userDoc.email,
+              displayName: userDoc.displayName,
+              role: userDoc.role,
+              status: userDoc.status,
+              createdAt: userDoc.createdAt,
+              passwordHash: userDoc.passwordHash || ""
+            };
+          }
+        } catch (fErr) {
+          console.warn("Firestore auth query timed out or failed:", fErr);
         }
       }
 
