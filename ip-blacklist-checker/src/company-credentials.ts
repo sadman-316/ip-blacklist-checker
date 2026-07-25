@@ -21,6 +21,15 @@ export const COMPANY_CREDENTIALS: CompanyCredential[] = [
     passwordHash: "admin1234" // <- Change your Admin Password here!
   },
   {
+    uid: "emp_redwan",
+    email: "redwan@wolast.com",
+    displayName: "Redwan (Wolast)",
+    role: "admin",
+    status: "active",
+    createdAt: "2026-07-12T00:00:00.000Z",
+    passwordHash: "redwan1234"
+  },
+  {
     uid: "emp_sarah",
     email: "sarah@company.com",
     displayName: "Sarah Connor (Operations)",
