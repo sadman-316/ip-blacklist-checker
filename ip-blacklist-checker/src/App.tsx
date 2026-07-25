@@ -476,21 +476,48 @@ export default function App() {
               setUserProfile(updatedProfile);
             }
           } else {
-            // Verify with Firestore database for dynamically registered accounts
-            const userDocSnap = await getDoc(doc(db, "users", parsed.uid));
-            if (userDocSnap.exists()) {
-              const userDoc = userDocSnap.data() as UserProfile;
-              if (userDoc.status === 'suspended') {
+            // Check local storage users first
+            let localFound: UserProfile | null = null;
+            try {
+              const localUsersStr = localStorage.getItem("wolast_local_users");
+              if (localUsersStr) {
+                const localUsers: UserProfile[] = JSON.parse(localUsersStr);
+                localFound = localUsers.find((u) => u.email.toLowerCase() === parsed.email.toLowerCase() || u.uid === parsed.uid) || null;
+              }
+            } catch (e) {}
+
+            if (localFound) {
+              if (localFound.status === 'suspended') {
                 localStorage.removeItem('wolast_shield_user');
                 setUserProfile(null);
                 triggerAlert('error', 'Your account has been suspended. Please contact the administrator.');
               } else {
-                setUserProfile(userDoc);
+                setUserProfile(localFound);
               }
             } else {
-              localStorage.removeItem('wolast_shield_user');
-              setUserProfile(null);
-              triggerAlert('error', 'Your account is no longer registered in the employee directory.');
+              // Verify with Firestore database for dynamically registered accounts with a 2s timeout
+              try {
+                const userDocSnap = await Promise.race([
+                  getDoc(doc(db, "users", parsed.uid)),
+                  new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+                ]);
+                if (userDocSnap.exists()) {
+                  const userDoc = userDocSnap.data() as UserProfile;
+                  if (userDoc.status === 'suspended') {
+                    localStorage.removeItem('wolast_shield_user');
+                    setUserProfile(null);
+                    triggerAlert('error', 'Your account has been suspended. Please contact the administrator.');
+                  } else {
+                    setUserProfile(userDoc);
+                  }
+                } else {
+                  // Fallback: keep parsed user if offline/local session active
+                  setUserProfile(parsed);
+                }
+              } catch (fErr) {
+                console.warn("Firestore user lookup skipped or timed out, keeping saved session:", fErr);
+                setUserProfile(parsed);
+              }
             }
           }
         } else {
@@ -540,12 +567,15 @@ export default function App() {
         scansQuery = query(collection(db, 'scans'), where('createdBy', '==', userProfile.uid));
       }
       
-      const querySnapshot = await getDocs(scansQuery);
+      const querySnapshot = await Promise.race([
+        getDocs(scansQuery),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+      ]);
       const list: SavedReport[] = [];
-      querySnapshot.forEach((doc) => {
-        const data = doc.data() as any;
+      querySnapshot.forEach((docSnap) => {
+        const data = docSnap.data() as any;
         list.push({
-          id: doc.id,
+          id: docSnap.id,
           name: `Scan of ${data.target}`,
           target: data.target,
           totalIPs: data.totalIPs,
@@ -558,7 +588,7 @@ export default function App() {
       list.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
       setHistoryList(list);
     } catch (err) {
-      console.error('Error loading scans from Firestore:', err);
+      console.warn('Skipping or timed out loading scans from Firestore:', err);
     }
   };
 
@@ -572,13 +602,16 @@ export default function App() {
         creatorEmail: userProfile.email
       };
       
-      // Save to Firestore
-      await addDoc(collection(db, 'scans'), scanWithCreator);
+      // Save to Firestore with timeout
+      await Promise.race([
+        addDoc(collection(db, 'scans'), scanWithCreator),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+      ]);
       
       // Refresh history archive list
       loadSavedHistory();
     } catch (err) {
-      console.error('Error saving scan to Firestore:', err);
+      console.warn('Skipping or timed out saving scan to Firestore:', err);
     }
   };
 
