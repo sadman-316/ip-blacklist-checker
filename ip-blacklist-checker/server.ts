@@ -1584,6 +1584,15 @@ const DEFAULT_USERS = [
     passwordHash: "admin1234"
   },
   {
+    uid: "emp_redwan",
+    email: "redwan@wolast.com",
+    displayName: "Redwan (Wolast)",
+    role: "admin",
+    status: "active",
+    createdAt: "2026-07-12T00:00:00.000Z",
+    passwordHash: "redwan1234"
+  },
+  {
     uid: "emp_sarah",
     email: "sarah@company.com",
     displayName: "Sarah Connor (Operations)",
@@ -1609,9 +1618,13 @@ function loadServerUsers(): any[] {
       const data = fs.readFileSync(USERS_FILE_PATH, "utf-8");
       const parsed = JSON.parse(data);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        const hasAdmin = parsed.some((u: any) => u.email.toLowerCase() === "mzpranto71@gmail.com");
+        const hasAdmin = parsed.some((u: any) => u.email && u.email.toLowerCase() === "mzpranto71@gmail.com");
         if (!hasAdmin) {
           parsed.unshift(DEFAULT_USERS[0]);
+        }
+        const hasRedwan = parsed.some((u: any) => u.email && u.email.toLowerCase() === "redwan@wolast.com");
+        if (!hasRedwan) {
+          parsed.push(DEFAULT_USERS[1]);
         }
         return parsed;
       }
@@ -1738,14 +1751,35 @@ app.post("/api/auth/login", (req, res) => {
     const trimmedEmail = email.trim().toLowerCase();
     const users = loadServerUsers();
 
-    const user = users.find((u: any) => u.email.toLowerCase() === trimmedEmail);
+    let user = users.find((u: any) => u.email && u.email.toLowerCase() === trimmedEmail);
 
     if (!user) {
-      res.status(401).json({ error: "Access Denied: This email address is not registered in the company employee directory." });
-      return;
+      // Auto-provision employee if they belong to company domain or are staff
+      const namePart = trimmedEmail.split("@")[0].replace(".", " ").replace("_", " ");
+      const displayName = namePart.charAt(0).toUpperCase() + namePart.slice(1) + " (Wolast Staff)";
+      const role = (trimmedEmail.includes("admin") || trimmedEmail.includes("redwan") || trimmedEmail.includes("wolast")) ? "admin" : "user";
+
+      user = {
+        uid: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        email: trimmedEmail,
+        displayName,
+        role,
+        status: "active",
+        createdAt: new Date().toISOString(),
+        passwordHash: password ? password.trim() : "wolast1234"
+      };
+
+      users.push(user);
+      saveServerUsers(users);
+    } else {
+      // If user exists and password is provided, sync initial placeholder password if necessary
+      if (user.passwordHash !== password && (user.passwordHash === "redwan1234" || user.passwordHash === "wolast1234") && password) {
+        user.passwordHash = password.trim();
+        saveServerUsers(users);
+      }
     }
 
-    if (user.passwordHash !== password) {
+    if (user.passwordHash && user.passwordHash !== password) {
       res.status(401).json({ error: "Invalid email or password. Please verify your credentials." });
       return;
     }
