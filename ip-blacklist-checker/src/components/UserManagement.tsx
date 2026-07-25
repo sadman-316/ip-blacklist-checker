@@ -39,6 +39,14 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
     setLoading(true);
     try {
       const mergedMap = new Map<string, UserProfile>();
+      let fetchedFromServer = false;
+
+      // Track deleted users locally to prevent resurrection
+      let deletedEmails: string[] = [];
+      try {
+        const delStr = localStorage.getItem("wolast_deleted_users");
+        if (delStr) deletedEmails = JSON.parse(delStr);
+      } catch (e) {}
 
       // 1. Fetch users from central Express server API first (VPS persistent store)
       try {
@@ -47,10 +55,11 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
           const data = await res.json();
           if (data && Array.isArray(data.users)) {
             data.users.forEach((u: UserProfile) => {
-              if (u && u.email) {
+              if (u && u.email && !deletedEmails.includes(u.email.toLowerCase())) {
                 mergedMap.set(u.email.toLowerCase(), u);
               }
             });
+            fetchedFromServer = true;
           }
         }
       } catch (apiErr) {
@@ -65,8 +74,10 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
         ]);
         querySnapshot.forEach((docSnap) => {
           const u = docSnap.data() as UserProfile;
-          if (u && u.email && !mergedMap.has(u.email.toLowerCase())) {
-            mergedMap.set(u.email.toLowerCase(), u);
+          if (u && u.email && !deletedEmails.includes(u.email.toLowerCase())) {
+            if (!mergedMap.has(u.email.toLowerCase())) {
+              mergedMap.set(u.email.toLowerCase(), u);
+            }
           }
         });
       } catch (fErr) {
@@ -79,27 +90,31 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
         if (localUsersStr) {
           const localUsers: UserProfile[] = JSON.parse(localUsersStr);
           localUsers.forEach((u) => {
-            if (u && u.email && !mergedMap.has(u.email.toLowerCase())) {
-              mergedMap.set(u.email.toLowerCase(), u);
+            if (u && u.email && !deletedEmails.includes(u.email.toLowerCase())) {
+              if (!mergedMap.has(u.email.toLowerCase())) {
+                mergedMap.set(u.email.toLowerCase(), u);
+              }
             }
           });
         }
       } catch (e) {}
 
-      // 4. Add hardcoded COMPANY_CREDENTIALS
-      for (const cred of COMPANY_CREDENTIALS) {
-        const lowerEmail = cred.email.toLowerCase();
-        if (!mergedMap.has(lowerEmail)) {
-          const syncProfile: UserProfile = {
-            uid: cred.uid,
-            email: cred.email,
-            displayName: cred.displayName,
-            role: cred.role,
-            createdAt: cred.createdAt,
-            status: cred.status,
-            passwordHash: cred.passwordHash
-          };
-          mergedMap.set(lowerEmail, syncProfile);
+      // 4. Add hardcoded COMPANY_CREDENTIALS ONLY if server wasn't fetched and not deleted
+      if (!fetchedFromServer) {
+        for (const cred of COMPANY_CREDENTIALS) {
+          const lowerEmail = cred.email.toLowerCase();
+          if (!deletedEmails.includes(lowerEmail) && !mergedMap.has(lowerEmail)) {
+            const syncProfile: UserProfile = {
+              uid: cred.uid,
+              email: cred.email,
+              displayName: cred.displayName,
+              role: cred.role,
+              createdAt: cred.createdAt,
+              status: cred.status,
+              passwordHash: cred.passwordHash
+            };
+            mergedMap.set(lowerEmail, syncProfile);
+          }
         }
       }
 
@@ -274,18 +289,41 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
     }
 
     try {
-      // 1. Call server API to delete from VPS disk
+      const lowerEmail = user.email.toLowerCase();
+
+      // 1. Remember deleted email locally so hardcoded lists never resurrect it
       try {
-        await fetch(`/api/users/${user.uid}`, { method: "DELETE" });
+        const delStr = localStorage.getItem("wolast_deleted_users");
+        const deletedList: string[] = delStr ? JSON.parse(delStr) : [];
+        if (!deletedList.includes(lowerEmail)) {
+          deletedList.push(lowerEmail);
+          localStorage.setItem("wolast_deleted_users", JSON.stringify(deletedList));
+        }
+      } catch (e) {}
+
+      // 2. Call server API to delete from VPS disk store
+      try {
+        await fetch(`/api/users/${encodeURIComponent(user.uid)}?email=${encodeURIComponent(user.email)}`, { method: "DELETE" });
       } catch (apiErr) {
         console.warn("Server API delete user error:", apiErr);
       }
 
-      // 2. Remove from local storage
-      const currentLocals = getLocalUsers().filter(u => u.uid !== user.uid && u.email.toLowerCase() !== user.email.toLowerCase());
+      // 3. Delete from Firestore if present
+      try {
+        if (user.uid) {
+          await deleteDoc(doc(db, "users", user.uid));
+        }
+        await deleteDoc(doc(db, "users", lowerEmail));
+      } catch (fErr) {
+        console.warn("Firestore delete user error:", fErr);
+      }
+
+      // 4. Remove from local storage
+      const currentLocals = getLocalUsers().filter(u => u.uid !== user.uid && u.email.toLowerCase() !== lowerEmail);
       saveLocalUsers(currentLocals);
 
       setConfirmDeleteId(null);
+      setUsers(prev => prev.filter(u => u.uid !== user.uid && u.email.toLowerCase() !== lowerEmail));
       triggerAlert("success", `Successfully deleted user ${user.displayName}`);
 
       fetchUsers();
