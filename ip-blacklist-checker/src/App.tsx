@@ -1562,12 +1562,12 @@ export default function App() {
                   </div>
 
                   {/* Node Inspector (Right Column) */}
-                  <div className="bg-white rounded-xl p-5 cyber-card h-[520px] flex flex-col justify-between">
+                  <div className="bg-white rounded-xl p-5 cyber-card min-h-[580px] flex flex-col justify-between overflow-hidden">
                     {selectedIP ? (
-                      <div className="space-y-4 flex-1 flex flex-col justify-between">
-                        {/* Upper Details */}
-                        <div className="space-y-4 overflow-y-auto max-h-[380px] pr-1">
-                          <div className="flex justify-between items-start border-b border-slate-150 pb-3">
+                      <div className="flex-1 flex flex-col justify-between min-h-0 space-y-3">
+                        {/* Upper Details - scrollable area */}
+                        <div className="space-y-3 overflow-y-auto flex-1 min-h-0 pr-1">
+                          <div className="flex justify-between items-start border-b border-slate-150 pb-2.5">
                             <div>
                               <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider block">Inspecting Asset Node</span>
                               <h3 className="text-sm font-black font-mono text-slate-950 mt-0.5">{selectedIP.ip}</h3>
@@ -1718,8 +1718,8 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* Action Planner / Inline Notepad */}
-                        <div className="space-y-3 pt-3 border-t border-slate-150">
+                        {/* Action Planner / Inline Notepad - pinned at bottom */}
+                        <div className="shrink-0 space-y-2.5 pt-3 border-t border-slate-150">
                           <div className="flex items-center justify-between">
                             <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1">
                               <Edit3 className="w-3 h-3 text-slate-400" />
@@ -1744,15 +1744,15 @@ export default function App() {
                             value={noteText}
                             onChange={(e) => setNoteText(e.target.value)}
                             placeholder="Type diagnostic log notes, ISP appeal references..."
-                            className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500/15 focus:border-blue-500/60 transition-all font-semibold text-slate-900 leading-normal"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-red-500/15 focus:border-red-500/60 transition-all font-semibold text-slate-900 leading-normal resize-none"
                           />
 
                           <button 
                             onClick={handleSaveIPNotes}
-                            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-1.5 rounded-lg text-[10px] font-extrabold uppercase tracking-wide shadow-2xs transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                            className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg text-xs font-black uppercase tracking-wider shadow-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.99]"
                           >
-                            <Check className="w-3.5 h-3.5" />
-                            Save Action Plan
+                            <Check className="w-4 h-4 text-white" />
+                            Save Action Plan & Notes
                           </button>
                         </div>
                       </div>
