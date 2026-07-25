@@ -87,46 +87,76 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
     }
   };
 
+  const saveLocalIPs = (list: MonitoredIP[]) => {
+    try {
+      localStorage.setItem("wolast_local_monitored_ips", JSON.stringify(list));
+    } catch (e) {}
+  };
+
+  const getLocalIPs = (): MonitoredIP[] => {
+    try {
+      const data = localStorage.getItem("wolast_local_monitored_ips");
+      return data ? JSON.parse(data) : [];
+    } catch (e) {
+      return [];
+    }
+  };
+
+  const saveLocalNotifs = (list: AlertNotification[]) => {
+    try {
+      localStorage.setItem("wolast_local_notifications", JSON.stringify(list));
+    } catch (e) {}
+  };
+
+  const getLocalNotifs = (): AlertNotification[] => {
+    try {
+      const data = localStorage.getItem("wolast_local_notifications");
+      return data ? JSON.parse(data) : [];
+    } catch (e) {
+      return [];
+    }
+  };
+
   const fetchMonitoredData = async () => {
     setLoading(true);
     try {
-      // 1. Fetch monitored IPs based on user role
-      let ipQuery;
-      if (isAdmin) {
-        // Admins can see all monitored IPs
-        ipQuery = query(collection(db, "monitored_ips"));
-      } else {
-        // Users can only see their own
-        ipQuery = query(collection(db, "monitored_ips"), where("createdBy", "==", currentUser.uid));
+      const combinedIPs = new Map<string, MonitoredIP>();
+      const combinedNotifs = new Map<string, AlertNotification>();
+
+      // Load local storage first
+      getLocalIPs().forEach(item => combinedIPs.set(item.id, item));
+      getLocalNotifs().forEach(item => combinedNotifs.set(item.id, item));
+
+      // Fetch from Express server API
+      try {
+        const res = await fetch("/api/monitored-ips");
+        if (res.ok) {
+          const data = await res.json();
+          if (data && Array.isArray(data.ips)) {
+            data.ips.forEach((item: MonitoredIP) => {
+              if (item && item.id && (isAdmin || item.createdBy === currentUser.uid)) {
+                combinedIPs.set(item.id, item);
+              }
+            });
+          }
+        }
+      } catch (apiErr) {
+        console.warn("Server monitored-ips API fetch skipped:", apiErr);
       }
 
-      const ipSnapshot = await getDocs(ipQuery);
-      const ipList: MonitoredIP[] = [];
-      ipSnapshot.forEach((doc) => {
-        ipList.push({ id: doc.id, ...(doc.data() as any) } as MonitoredIP);
-      });
-      setMonitoredIPs(ipList);
+      const ipList = Array.from(combinedIPs.values());
+      const notifList = Array.from(combinedNotifs.values());
 
-      // 2. Fetch status-change notifications based on user role
-      let notifQuery;
-      if (isAdmin) {
-        notifQuery = query(collection(db, "notifications"));
-      } else {
-        notifQuery = query(collection(db, "notifications"), where("userId", "==", currentUser.uid));
-      }
-      
-      const notifSnapshot = await getDocs(notifQuery);
-      const notifList: AlertNotification[] = [];
-      notifSnapshot.forEach((doc) => {
-        notifList.push({ id: doc.id, ...(doc.data() as any) } as AlertNotification);
-      });
-      // Sort notifications by timestamp descending
       notifList.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+      setMonitoredIPs(ipList);
+      saveLocalIPs(ipList);
+
       setNotifications(notifList);
+      saveLocalNotifs(notifList);
 
     } catch (err) {
-      console.error("Error fetching monitored data:", err);
-      triggerAlert("error", "Failed to retrieve monitored IP database.");
+      console.error("Error loading monitored data:", err);
     } finally {
       setLoading(false);
     }
@@ -164,7 +194,10 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
       const firstResult = scanResult.results[0] || { status: "unknown", listedCount: 0, listings: {} };
       const blacklisted = scanResult.results.filter((r: any) => r.status === 'listed');
 
-      const newIP: Omit<MonitoredIP, "id"> = {
+      const tempId = `ip_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+      const newIP: MonitoredIP = {
+        id: tempId,
         ipOrCidr: cleanedInput,
         label: label.trim() || `Host ${cleanedInput}`,
         status: scanResult.listedCount > 0 ? "listed" : "clean",
@@ -172,20 +205,33 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
         listings: firstResult.listings,
         totalIPs: scanResult.totalIPs,
         blacklistedIPs: blacklisted,
-        simulate: false, // Ensure background daemon also runs real scans
+        simulate: false,
         lastChecked: new Date().toISOString(),
         createdBy: currentUser.uid,
         creatorEmail: currentUser.email
       };
 
-      const docRef = await addDoc(collection(db, "monitored_ips"), newIP);
-      
+      // 1. Update local storage and UI immediately
+      const currentLocals = getLocalIPs().filter(item => item.id !== tempId);
+      currentLocals.push(newIP);
+      saveLocalIPs(currentLocals);
+      setMonitoredIPs(prev => [newIP, ...prev.filter(i => i.id !== tempId)]);
+
       triggerAlert("success", `Added ${cleanedInput} to continuous monitoring.`);
       setIpOrCidr("");
       setLabel("");
-      
-      // Refresh list
-      fetchMonitoredData();
+
+      // 2. Send to Express server API
+      try {
+        await fetch("/api/monitored-ips", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(newIP)
+        });
+      } catch (apiErr) {
+        console.warn("Server API add monitored IP error:", apiErr);
+      }
+
     } catch (err: any) {
       console.error("Error adding monitored IP:", err);
       triggerAlert("error", err.message || "Failed to add IP to monitoring.");
@@ -203,10 +249,10 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
     }
     setEditLoading(true);
     try {
-      const docRef = doc(db, "monitored_ips", editingIP.id);
       const hasAddressChanged = editIpOrCidr.trim() !== editingIP.ipOrCidr;
       
       let updatedFields: any = {
+        ...editingIP,
         label: editLabel.trim() || `Host ${editIpOrCidr.trim()}`,
         ipOrCidr: editIpOrCidr.trim()
       };
@@ -228,7 +274,7 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
           updatedFields.listings = firstResult.listings;
           updatedFields.totalIPs = scanResult.totalIPs;
           updatedFields.blacklistedIPs = blacklisted;
-          updatedFields.simulate = false; // set to false on update
+          updatedFields.simulate = false;
           updatedFields.lastChecked = new Date().toISOString();
         } else {
           const errorData = await res.json();
@@ -236,10 +282,26 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
         }
       }
       
-      await updateDoc(docRef, updatedFields);
+      // Update local storage and UI
+      const currentLocals = getLocalIPs().filter(i => i.id !== editingIP.id);
+      currentLocals.push(updatedFields);
+      saveLocalIPs(currentLocals);
+      setMonitoredIPs(prev => prev.map(i => i.id === editingIP.id ? updatedFields : i));
+
       triggerAlert("success", `Successfully updated monitoring target.`);
       setEditingIP(null);
-      fetchMonitoredData();
+
+      // Send to Express server API
+      try {
+        await fetch(`/api/monitored-ips/${editingIP.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updatedFields)
+        });
+      } catch (apiErr) {
+        console.warn("Server API update monitored IP error:", apiErr);
+      }
+
     } catch (err: any) {
       console.error("Error updating monitored IP:", err);
       triggerAlert("error", err.message || "Failed to update target.");
@@ -252,10 +314,20 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
     if (!deletingIP) return;
     setDeleteLoading(true);
     try {
-      await deleteDoc(doc(db, "monitored_ips", deletingIP.id));
-      triggerAlert("success", `Successfully stopped monitoring ${deletingIP.ipOrCidr}`);
+      // 1. Remove from local storage & state immediately
+      const currentLocals = getLocalIPs().filter(ip => ip.id !== deletingIP.id);
+      saveLocalIPs(currentLocals);
       setMonitoredIPs(prev => prev.filter(ip => ip.id !== deletingIP.id));
+
+      triggerAlert("success", `Successfully stopped monitoring ${deletingIP.ipOrCidr}`);
       setDeletingIP(null);
+
+      // 2. Call Express server API delete
+      try {
+        await fetch(`/api/monitored-ips/${deletingIP.id}`, { method: "DELETE" });
+      } catch (apiErr) {
+        console.warn("Server API delete monitored IP error:", apiErr);
+      }
     } catch (err) {
       console.error("Error deleting monitored IP:", err);
       triggerAlert("error", "Failed to remove IP from monitoring.");
