@@ -24,12 +24,44 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
     const trimmedEmail = email.trim().toLowerCase();
 
     try {
-      // Find credential from manual config
-      let matchingCredential: any = COMPANY_CREDENTIALS.find(
-        (cred) => cred.email.toLowerCase() === trimmedEmail
-      );
+      let matchingCredential: any = null;
 
-      // Check local storage users next
+      // 1. Try central Express server authentication API first
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: trimmedEmail, password })
+        });
+
+        const data = await res.json();
+
+        if (res.ok && data.success && data.user) {
+          matchingCredential = data.user;
+        } else if (data && data.error) {
+          // Explicit error returned by central authentication server
+          throw new Error(data.error);
+        }
+      } catch (apiErr: any) {
+        // If it's an explicit error from server (e.g. wrong password or unregistered), rethrow it
+        if (apiErr.message && (
+          apiErr.message.includes("Access Denied") ||
+          apiErr.message.includes("Invalid email") ||
+          apiErr.message.includes("suspended")
+        )) {
+          throw apiErr;
+        }
+        console.warn("Server auth endpoint unavailable, falling back to local credentials check:", apiErr);
+      }
+
+      // 2. Fallback to hardcoded credentials if server API was offline
+      if (!matchingCredential) {
+        matchingCredential = COMPANY_CREDENTIALS.find(
+          (cred) => cred.email.toLowerCase() === trimmedEmail
+        );
+      }
+
+      // 3. Fallback to local storage users
       if (!matchingCredential) {
         try {
           const localUsersStr = localStorage.getItem("wolast_local_users");
@@ -37,21 +69,13 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
             const localUsers: UserProfile[] = JSON.parse(localUsersStr);
             const localFound = localUsers.find((u) => u.email.toLowerCase() === trimmedEmail);
             if (localFound) {
-              matchingCredential = {
-                uid: localFound.uid,
-                email: localFound.email,
-                displayName: localFound.displayName,
-                role: localFound.role,
-                status: localFound.status,
-                createdAt: localFound.createdAt,
-                passwordHash: localFound.passwordHash || ""
-              };
+              matchingCredential = localFound;
             }
           }
         } catch (e) {}
       }
 
-      // Try searching in Firestore users collection with a 2s timeout
+      // 4. Fallback to Firestore users lookup
       if (!matchingCredential) {
         try {
           const usersRef = collection(db, "users");
@@ -62,16 +86,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
           ]);
 
           if (!querySnapshot.empty) {
-            const userDoc = querySnapshot.docs[0].data() as UserProfile;
-            matchingCredential = {
-              uid: userDoc.uid,
-              email: userDoc.email,
-              displayName: userDoc.displayName,
-              role: userDoc.role,
-              status: userDoc.status,
-              createdAt: userDoc.createdAt,
-              passwordHash: userDoc.passwordHash || ""
-            };
+            matchingCredential = querySnapshot.docs[0].data() as UserProfile;
           }
         } catch (fErr) {
           console.warn("Firestore auth query timed out or failed:", fErr);
@@ -84,8 +99,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
         );
       }
 
-      // Check password (manual code representation)
-      if (matchingCredential.passwordHash !== password) {
+      // Check password if fallback match was used
+      if (matchingCredential.passwordHash && matchingCredential.passwordHash !== password) {
         throw new Error("Invalid email or password. Please verify your credentials.");
       }
 
@@ -106,12 +121,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
 
       // Save to localStorage for quick persistence on reload
       localStorage.setItem("wolast_shield_user", JSON.stringify(profile));
-
-      // Sync user profile to Firestore asynchronously so the rest of the application (User lists, etc.) operates perfectly
-      // We do not await this, so it never blocks the user from logging in and accessing the dashboard
-      setDoc(doc(db, "users", profile.uid), profile, { merge: true }).catch((firestoreErr) => {
-        console.warn("Failed to sync manual user to Firestore (could be offline/rules):", firestoreErr);
-      });
 
       // Pass user to parent component immediately
       onAuthSuccess(profile);
