@@ -557,42 +557,64 @@ export default function App() {
   };
 
   // Load historical listings from Firestore
+  // Load historical listings from server API and local storage
   const loadSavedHistory = async () => {
     if (!userProfile) return;
     try {
-      let scansQuery;
-      if (userProfile.role === 'admin') {
-        scansQuery = query(collection(db, 'scans'));
-      } else {
-        scansQuery = query(collection(db, 'scans'), where('createdBy', '==', userProfile.uid));
+      const scanMap = new Map<string, any>();
+
+      // 1. Fetch from server API first
+      try {
+        const res = await fetch('/api/scans');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && Array.isArray(data.scans)) {
+            data.scans.forEach((s: any) => {
+              if (s && s.id && (userProfile.role === 'admin' || s.createdBy === userProfile.uid)) {
+                scanMap.set(s.id, s);
+              }
+            });
+          }
+        }
+      } catch (apiErr) {
+        console.warn('Server scans API fetch skipped:', apiErr);
       }
-      
-      const querySnapshot = await Promise.race([
-        getDocs(scansQuery),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
-      ]);
-      const list: SavedReport[] = [];
-      querySnapshot.forEach((docSnap) => {
-        const data = docSnap.data() as any;
-        list.push({
-          id: docSnap.id,
-          name: `Scan of ${data.target}`,
-          target: data.target,
-          totalIPs: data.totalIPs,
-          cleanCount: data.cleanCount,
-          listedCount: data.listedCount,
-          timestamp: data.timestamp
-        });
-      });
-      // Sort descending by timestamp
-      list.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+      // 2. Fetch from local storage backup
+      try {
+        const localData = localStorage.getItem('wolast_scans_history');
+        if (localData) {
+          const parsed = JSON.parse(localData);
+          if (Array.isArray(parsed)) {
+            parsed.forEach((s: any) => {
+              if (s && s.id && !scanMap.has(s.id) && (userProfile.role === 'admin' || s.createdBy === userProfile.uid)) {
+                scanMap.set(s.id, s);
+              }
+            });
+          }
+        }
+      } catch (e) {}
+
+      // 3. Convert to list and sort descending by timestamp
+      const rawScans = Array.from(scanMap.values());
+      const list: SavedReport[] = rawScans.map((data: any) => ({
+        id: data.id,
+        name: `Scan of ${data.target}`,
+        target: data.target,
+        totalIPs: data.totalIPs,
+        cleanCount: data.cleanCount,
+        listedCount: data.listedCount,
+        timestamp: data.timestamp
+      }));
+
+      list.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
       setHistoryList(list);
     } catch (err) {
-      console.warn('Skipping or timed out loading scans from Firestore:', err);
+      console.warn('Error loading scans:', err);
     }
   };
 
-  // Save scan to Firestore history archive
+  // Save scan to history archive
   const saveScanToHistory = async (newReport: SubnetScanReport) => {
     if (!userProfile) return;
     try {
@@ -602,32 +624,67 @@ export default function App() {
         creatorEmail: userProfile.email
       };
       
-      // Save to Firestore with timeout
-      await Promise.race([
-        addDoc(collection(db, 'scans'), scanWithCreator),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
-      ]);
-      
-      // Refresh history archive list
+      // 1. Save to local storage first for immediate availability
+      try {
+        const localData = localStorage.getItem('wolast_scans_history');
+        const parsed = localData ? JSON.parse(localData) : [];
+        const filtered = parsed.filter((s: any) => s.id !== scanWithCreator.id);
+        filtered.unshift(scanWithCreator);
+        localStorage.setItem('wolast_scans_history', JSON.stringify(filtered));
+      } catch (e) {}
+
+      // 2. Send to Express server API
+      try {
+        await fetch('/api/scans', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(scanWithCreator)
+        });
+      } catch (apiErr) {
+        console.warn('Failed to save scan to server API:', apiErr);
+      }
+
+      // Refresh history list
       loadSavedHistory();
     } catch (err) {
-      console.warn('Skipping or timed out saving scan to Firestore:', err);
+      console.warn('Error saving scan history:', err);
     }
   };
 
   // Load a single detailed report from history
   const loadReportDetails = async (id: string) => {
     try {
-      const scanDoc = await getDoc(doc(db, 'scans', id));
-      if (scanDoc.exists()) {
-        const parsedReport = { id, ...scanDoc.data() } as SubnetScanReport;
-        setReport(parsedReport);
-        setSelectedIP(null);
-        setActiveTab('dashboard');
-        triggerAlert('success', `Loaded historical scan report for ${parsedReport.target}`);
-      } else {
-        triggerAlert('error', 'Detailed report file not found in database.');
+      // 1. Check local storage
+      try {
+        const localData = localStorage.getItem('wolast_scans_history');
+        if (localData) {
+          const parsed = JSON.parse(localData);
+          const found = parsed.find((s: any) => s.id === id);
+          if (found) {
+            setReport(found as SubnetScanReport);
+            setSelectedIP(null);
+            setActiveTab('dashboard');
+            triggerAlert('success', `Loaded historical scan report for ${found.target}`);
+            return;
+          }
+        }
+      } catch (e) {}
+
+      // 2. Check server API
+      const res = await fetch('/api/scans');
+      if (res.ok) {
+        const data = await res.json();
+        const found = data.scans?.find((s: any) => s.id === id);
+        if (found) {
+          setReport(found as SubnetScanReport);
+          setSelectedIP(null);
+          setActiveTab('dashboard');
+          triggerAlert('success', `Loaded historical scan report for ${found.target}`);
+          return;
+        }
       }
+
+      triggerAlert('error', 'Detailed report file not found in database.');
     } catch (err) {
       triggerAlert('error', 'Could not retrieve historical scan report.');
     }
@@ -636,13 +693,29 @@ export default function App() {
   // Delete a detailed report from history
   const deleteHistoryReport = async (id: string) => {
     try {
-      await deleteDoc(doc(db, 'scans', id));
       setHistoryList(prev => prev.filter(h => h.id !== id));
       triggerAlert('info', 'Report deleted successfully.');
       if (report && report.id === id) {
         setReport(null);
       }
       setArchiveConfirmDeleteId(null);
+
+      // Update local storage
+      try {
+        const localData = localStorage.getItem('wolast_scans_history');
+        if (localData) {
+          const parsed = JSON.parse(localData);
+          const filtered = parsed.filter((s: any) => s.id !== id);
+          localStorage.setItem('wolast_scans_history', JSON.stringify(filtered));
+        }
+      } catch (e) {}
+
+      // Call server API delete
+      try {
+        await fetch(`/api/scans/${id}`, { method: 'DELETE' });
+      } catch (apiErr) {
+        console.warn('Error deleting scan via server API:', apiErr);
+      }
     } catch (err) {
       triggerAlert('error', 'Failed to delete report.');
     }
