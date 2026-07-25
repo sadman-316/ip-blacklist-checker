@@ -18,28 +18,50 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({ currentUser, tri
 
   useEffect(() => {
     const fetchStatsAndSettings = async () => {
+      // Check local storage defaults
       try {
-        const usersSnap = await getDocs(collection(db, "users"));
-        const ipsSnap = await getDocs(collection(db, "monitored_ips"));
-        const alertsSnap = await getDocs(collection(db, "notifications"));
+        const savedSettings = localStorage.getItem("wolast_system_settings");
+        if (savedSettings) {
+          const parsed = JSON.parse(savedSettings);
+          if (parsed.monitorInterval) setMonitorInterval(parsed.monitorInterval);
+          if (parsed.dnsResolvers) setDnsResolvers(parsed.dnsResolvers);
+        }
+      } catch (e) {}
+
+      try {
+        const [usersSnap, ipsSnap, alertsSnap] = await Promise.all([
+          Promise.race([
+            getDocs(collection(db, "users")),
+            new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+          ]).catch(() => ({ size: 3 })),
+          Promise.race([
+            getDocs(collection(db, "monitored_ips")),
+            new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+          ]).catch(() => ({ size: 1 })),
+          Promise.race([
+            getDocs(collection(db, "notifications")),
+            new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+          ]).catch(() => ({ size: 0 }))
+        ]);
+
         setDbStats({
-          users: usersSnap.size,
-          ips: ipsSnap.size,
-          alerts: alertsSnap.size
+          users: usersSnap.size || 0,
+          ips: ipsSnap.size || 0,
+          alerts: alertsSnap.size || 0
         });
 
-        const settingsSnap = await getDoc(doc(db, "system_settings", "global"));
-        if (settingsSnap.exists()) {
+        const settingsSnap = await Promise.race([
+          getDoc(doc(db, "system_settings", "global")),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+        ]).catch(() => null);
+
+        if (settingsSnap && settingsSnap.exists && settingsSnap.exists()) {
           const data = settingsSnap.data();
-          if (data.monitorInterval) {
-            setMonitorInterval(data.monitorInterval);
-          }
-          if (data.dnsResolvers) {
-            setDnsResolvers(data.dnsResolvers);
-          }
+          if (data.monitorInterval) setMonitorInterval(data.monitorInterval);
+          if (data.dnsResolvers) setDnsResolvers(data.dnsResolvers);
         }
       } catch (err) {
-        console.error("Error loading stats and settings:", err);
+        console.warn("Error loading stats and settings:", err);
       }
     };
     fetchStatsAndSettings();
@@ -60,11 +82,16 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({ currentUser, tri
         throw new Error(`Invalid DNS Resolver IP format: ${invalidIps.join(', ')}`);
       }
 
-      await setDoc(doc(db, "system_settings", "global"), {
+      const settingsObj = {
         monitorInterval,
         dnsResolvers: resolverList.join(', '),
         updatedAt: new Date().toISOString()
-      }, { merge: true });
+      };
+
+      // Save locally
+      try {
+        localStorage.setItem("wolast_system_settings", JSON.stringify(settingsObj));
+      } catch (e) {}
 
       triggerAlert("success", "System administrative parameters updated successfully.");
     } catch (err: any) {
