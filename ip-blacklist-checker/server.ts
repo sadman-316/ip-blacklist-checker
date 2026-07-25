@@ -1617,15 +1617,7 @@ function loadServerUsers(): any[] {
     if (fs.existsSync(USERS_FILE_PATH)) {
       const data = fs.readFileSync(USERS_FILE_PATH, "utf-8");
       const parsed = JSON.parse(data);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const hasAdmin = parsed.some((u: any) => u.email && u.email.toLowerCase() === "mzpranto71@gmail.com");
-        if (!hasAdmin) {
-          parsed.unshift(DEFAULT_USERS[0]);
-        }
-        const hasRedwan = parsed.some((u: any) => u.email && u.email.toLowerCase() === "redwan@wolast.com");
-        if (!hasRedwan) {
-          parsed.push(DEFAULT_USERS[1]);
-        }
+      if (Array.isArray(parsed)) {
         return parsed;
       }
     }
@@ -1723,18 +1715,24 @@ app.put("/api/users/:uid", (req, res) => {
 app.delete("/api/users/:uid", (req, res) => {
   try {
     const { uid } = req.params;
+    const emailQuery = (req.query.email as string || "").trim().toLowerCase();
+    const targetUidOrEmail = decodeURIComponent(uid).trim().toLowerCase();
     let users = loadServerUsers();
 
     const initialLen = users.length;
-    users = users.filter((u: any) => u.uid !== uid);
+    users = users.filter((u: any) => {
+      const uUid = (u.uid || "").trim().toLowerCase();
+      const uEmail = (u.email || "").trim().toLowerCase();
+      
+      const matchUid = uUid === targetUidOrEmail;
+      const matchEmail = uEmail === targetUidOrEmail;
+      const matchQueryEmail = emailQuery && uEmail === emailQuery;
 
-    if (users.length === initialLen) {
-      res.status(404).json({ error: "User not found." });
-      return;
-    }
+      return !(matchUid || matchEmail || matchQueryEmail);
+    });
 
     saveServerUsers(users);
-    res.json({ success: true });
+    res.json({ success: true, count: initialLen - users.length });
   } catch (err: any) {
     res.status(500).json({ error: `Failed to delete user: ${err.message}` });
   }
