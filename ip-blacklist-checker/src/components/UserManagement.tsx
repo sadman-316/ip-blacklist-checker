@@ -38,9 +38,26 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const firestoreUsersMap = new Map<string, UserProfile>();
-      
-      // Try fetching from Firestore with a 2.5s timeout
+      const mergedMap = new Map<string, UserProfile>();
+
+      // 1. Fetch users from central Express server API first (VPS persistent store)
+      try {
+        const res = await fetch("/api/users");
+        if (res.ok) {
+          const data = await res.json();
+          if (data && Array.isArray(data.users)) {
+            data.users.forEach((u: UserProfile) => {
+              if (u && u.email) {
+                mergedMap.set(u.email.toLowerCase(), u);
+              }
+            });
+          }
+        }
+      } catch (apiErr) {
+        console.warn("Server users API fetch skipped:", apiErr);
+      }
+
+      // 2. Fetch from Firestore users collection if available
       try {
         const querySnapshot = await Promise.race([
           getDocs(collection(db, "users")),
@@ -48,35 +65,28 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
         ]);
         querySnapshot.forEach((docSnap) => {
           const u = docSnap.data() as UserProfile;
-          if (u && u.email) {
-            firestoreUsersMap.set(u.email.toLowerCase(), u);
+          if (u && u.email && !mergedMap.has(u.email.toLowerCase())) {
+            mergedMap.set(u.email.toLowerCase(), u);
           }
         });
       } catch (fErr) {
         console.warn("Firestore fetch skipped or timed out:", fErr);
       }
 
-      const mergedMap = new Map<string, UserProfile>();
-
-      // 1. Add Firestore users
-      firestoreUsersMap.forEach((user, key) => {
-        mergedMap.set(key, user);
-      });
-
-      // 2. Add local storage users
+      // 3. Add local storage users
       try {
         const localUsersStr = localStorage.getItem("wolast_local_users");
         if (localUsersStr) {
           const localUsers: UserProfile[] = JSON.parse(localUsersStr);
           localUsers.forEach((u) => {
-            if (u && u.email) {
+            if (u && u.email && !mergedMap.has(u.email.toLowerCase())) {
               mergedMap.set(u.email.toLowerCase(), u);
             }
           });
         }
       } catch (e) {}
 
-      // 3. Add hardcoded COMPANY_CREDENTIALS
+      // 4. Add hardcoded COMPANY_CREDENTIALS
       for (const cred of COMPANY_CREDENTIALS) {
         const lowerEmail = cred.email.toLowerCase();
         if (!mergedMap.has(lowerEmail)) {
@@ -135,23 +145,24 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
 
     const nextRole = user.role === "admin" ? "user" : "admin";
 
-    // Update in local storage
+    // 1. Central Express server API update
+    try {
+      await fetch(`/api/users/${user.uid}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: nextRole })
+      });
+    } catch (apiErr) {
+      console.warn("Server API role update error:", apiErr);
+    }
+
+    // 2. Update in local storage
     const currentLocals = getLocalUsers().filter(u => u.uid !== user.uid && u.email.toLowerCase() !== user.email.toLowerCase());
     currentLocals.push({ ...user, role: nextRole });
     saveLocalUsers(currentLocals);
 
     setUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, role: nextRole } : u));
     triggerAlert("success", `Updated role for ${user.displayName} to ${nextRole.toUpperCase()}`);
-
-    // Try Firestore update with timeout
-    try {
-      await Promise.race([
-        updateDoc(doc(db, "users", user.uid), { role: nextRole }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
-      ]);
-    } catch (err) {
-      console.warn("Firestore role update skipped/timed out:", err);
-    }
   };
 
   const handleToggleStatus = async (user: UserProfile) => {
@@ -162,7 +173,18 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
 
     const nextStatus = user.status === "active" ? "suspended" : "active";
 
-    // Update in local storage
+    // 1. Central Express server API update
+    try {
+      await fetch(`/api/users/${user.uid}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus })
+      });
+    } catch (apiErr) {
+      console.warn("Server API status update error:", apiErr);
+    }
+
+    // 2. Update in local storage
     const currentLocals = getLocalUsers().filter(u => u.uid !== user.uid && u.email.toLowerCase() !== user.email.toLowerCase());
     currentLocals.push({ ...user, status: nextStatus });
     saveLocalUsers(currentLocals);
@@ -172,16 +194,6 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
       nextStatus === "suspended" ? "warning" : "success",
       `User ${user.displayName} is now ${nextStatus.toUpperCase()}`
     );
-
-    // Try Firestore update with timeout
-    try {
-      await Promise.race([
-        updateDoc(doc(db, "users", user.uid), { status: nextStatus }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
-      ]);
-    } catch (err) {
-      console.warn("Firestore status update skipped/timed out:", err);
-    }
   };
 
   const handleAddUser = async (e: React.FormEvent) => {
@@ -193,43 +205,63 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
 
     setAddLoading(true);
     try {
-      const tempUid = `pre_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      
-      const newProfile: UserProfile = {
-        uid: tempUid,
-        email: newEmail.trim().toLowerCase(),
-        displayName: newName.trim(),
-        role: newRole,
-        createdAt: new Date().toISOString(),
-        status: "active",
-        passwordHash: newPassword
-      };
+      const cleanEmail = newEmail.trim().toLowerCase();
+      let createdProfile: UserProfile | null = null;
 
-      // 1. Save to local storage first so it NEVER hangs
-      const currentLocals = getLocalUsers().filter(u => u.email.toLowerCase() !== newProfile.email.toLowerCase());
-      currentLocals.push(newProfile);
-      saveLocalUsers(currentLocals);
-
-      // 2. Try Firestore asynchronously with a 2s timeout
+      // 1. Call server API to create user on VPS persistent disk
       try {
-        await Promise.race([
-          setDoc(doc(db, "users", tempUid), newProfile),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
-        ]);
-      } catch (fErr) {
-        console.warn("Firestore setDoc skipped/timed out:", fErr);
+        const res = await fetch("/api/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: cleanEmail,
+            displayName: newName.trim(),
+            passwordHash: newPassword,
+            role: newRole
+          })
+        });
+
+        const data = await res.json();
+        if (res.ok && data.success && data.user) {
+          createdProfile = data.user;
+        } else if (data && data.error) {
+          throw new Error(data.error);
+        }
+      } catch (apiErr: any) {
+        if (apiErr.message && apiErr.message.includes("already exists")) {
+          throw apiErr;
+        }
+        console.warn("Server API user creation failed, falling back to local creation:", apiErr);
       }
 
-      triggerAlert("success", `Successfully provisioned role ${newRole.toUpperCase()} for ${newEmail}`);
+      if (!createdProfile) {
+        const tempUid = `pre_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        createdProfile = {
+          uid: tempUid,
+          email: cleanEmail,
+          displayName: newName.trim(),
+          role: newRole,
+          createdAt: new Date().toISOString(),
+          status: "active",
+          passwordHash: newPassword
+        };
+      }
+
+      // 2. Save to local storage for instant browser backup
+      const currentLocals = getLocalUsers().filter(u => u.email.toLowerCase() !== createdProfile!.email.toLowerCase());
+      currentLocals.push(createdProfile);
+      saveLocalUsers(currentLocals);
+
+      triggerAlert("success", `Successfully provisioned role ${newRole.toUpperCase()} for ${cleanEmail}`);
       setShowAddForm(false);
       setNewEmail("");
       setNewName("");
       setNewPassword("");
       setNewRole("user");
       fetchUsers();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error creating user profile:", err);
-      triggerAlert("error", "Failed to pre-seed user profile.");
+      triggerAlert("error", err.message || "Failed to create user profile.");
     } finally {
       setAddLoading(false);
     }
@@ -242,27 +274,24 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
     }
 
     try {
-      // Remove from local storage
+      // 1. Call server API to delete from VPS disk
+      try {
+        await fetch(`/api/users/${user.uid}`, { method: "DELETE" });
+      } catch (apiErr) {
+        console.warn("Server API delete user error:", apiErr);
+      }
+
+      // 2. Remove from local storage
       const currentLocals = getLocalUsers().filter(u => u.uid !== user.uid && u.email.toLowerCase() !== user.email.toLowerCase());
       saveLocalUsers(currentLocals);
 
       setConfirmDeleteId(null);
       triggerAlert("success", `Successfully deleted user ${user.displayName}`);
 
-      // Try Firestore delete with timeout
-      try {
-        await Promise.race([
-          deleteDoc(doc(db, "users", user.uid)),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
-        ]);
-      } catch (fErr) {
-        console.warn("Firestore deleteDoc skipped/timed out:", fErr);
-      }
-
       fetchUsers();
     } catch (err) {
-      console.error("Error deleting user:", err);
-      triggerAlert("error", "Failed to delete user account.");
+      console.error("Error deleting user profile:", err);
+      triggerAlert("error", "Failed to delete user profile.");
     }
   };
 
@@ -306,23 +335,24 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
         updatedFields.status = editStatus;
       }
 
-      // Update in local storage
+      // 1. Send update to central Express server API
+      try {
+        await fetch(`/api/users/${editingUser.uid}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updatedFields)
+        });
+      } catch (apiErr) {
+        console.warn("Server API update profile error:", apiErr);
+      }
+
+      // 2. Update in local storage
       const currentLocals = getLocalUsers().filter(u => u.uid !== editingUser.uid && u.email.toLowerCase() !== editingUser.email.toLowerCase());
       currentLocals.push(updatedFields);
       saveLocalUsers(currentLocals);
 
       triggerAlert("success", `Successfully updated profile for ${editName}`);
       setEditingUser(null);
-
-      // Try Firestore update with timeout
-      try {
-        await Promise.race([
-          updateDoc(doc(db, "users", editingUser.uid), updatedFields as any),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
-        ]);
-      } catch (fErr) {
-        console.warn("Firestore updateDoc skipped/timed out:", fErr);
-      }
 
       fetchUsers();
     } catch (err) {
