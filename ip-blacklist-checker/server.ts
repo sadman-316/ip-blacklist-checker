@@ -1570,32 +1570,415 @@ app.get("/api/providers", (req, res) => {
   res.json({ providers: BLACKLIST_PROVIDERS });
 });
 
-// API: Get Daily Blacklist Reports
-app.get("/api/reports/daily", async (req, res) => {
-  if (!serverDb) {
-    res.status(503).json({ error: "Firebase server connection is pending configuration." });
-    return;
+// Persistent User Accounts Store
+const USERS_FILE_PATH = path.join(process.cwd(), "users_store.json");
+
+const DEFAULT_USERS = [
+  {
+    uid: "admin_pranto",
+    email: "mzpranto71@gmail.com",
+    displayName: "Admin Pranto",
+    role: "admin",
+    status: "active",
+    createdAt: "2026-07-12T00:00:00.000Z",
+    passwordHash: "admin1234"
+  },
+  {
+    uid: "emp_sarah",
+    email: "sarah@company.com",
+    displayName: "Sarah Connor (Operations)",
+    role: "user",
+    status: "active",
+    createdAt: "2026-07-12T00:00:00.000Z",
+    passwordHash: "sarah5678"
+  },
+  {
+    uid: "emp_john",
+    email: "john@company.com",
+    displayName: "John Doe (Support)",
+    role: "user",
+    status: "active",
+    createdAt: "2026-07-12T00:00:00.000Z",
+    passwordHash: "john9012"
+  }
+];
+
+function loadServerUsers(): any[] {
+  try {
+    if (fs.existsSync(USERS_FILE_PATH)) {
+      const data = fs.readFileSync(USERS_FILE_PATH, "utf-8");
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const hasAdmin = parsed.some((u: any) => u.email.toLowerCase() === "mzpranto71@gmail.com");
+        if (!hasAdmin) {
+          parsed.unshift(DEFAULT_USERS[0]);
+        }
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.error("Error reading users_store.json:", err);
   }
   try {
-    const querySnapshot = await getDocs(collection(serverDb, "daily_reports"));
-    const reports: any[] = [];
-    querySnapshot.forEach((doc) => {
-      reports.push({ id: doc.id, ...doc.data() });
-    });
-    // Sort descending by date
-    reports.sort((a, b) => b.date.localeCompare(a.date));
-    res.json({ reports });
-  } catch (err: any) {
-    res.status(500).json({ error: `Failed to fetch daily reports: ${err.message}` });
+    fs.writeFileSync(USERS_FILE_PATH, JSON.stringify(DEFAULT_USERS, null, 2), "utf-8");
+  } catch (e) {}
+  return DEFAULT_USERS;
+}
+
+function saveServerUsers(users: any[]) {
+  try {
+    fs.writeFileSync(USERS_FILE_PATH, JSON.stringify(users, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error writing users_store.json:", err);
   }
+}
+
+// User API Routes
+app.get("/api/users", (req, res) => {
+  const users = loadServerUsers();
+  res.json({ users });
+});
+
+app.post("/api/users", (req, res) => {
+  try {
+    const { email, displayName, passwordHash, role } = req.body;
+    if (!email || !displayName || !passwordHash) {
+      res.status(400).json({ error: "Email, display name, and password are required." });
+      return;
+    }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    const users = loadServerUsers();
+
+    const existing = users.find((u: any) => u.email.toLowerCase() === trimmedEmail);
+    if (existing) {
+      res.status(400).json({ error: `User with email ${trimmedEmail} already exists in employee directory.` });
+      return;
+    }
+
+    const newUser = {
+      uid: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      email: trimmedEmail,
+      displayName: displayName.trim(),
+      role: role || "user",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      passwordHash: passwordHash.trim()
+    };
+
+    users.push(newUser);
+    saveServerUsers(users);
+
+    res.json({ success: true, user: newUser });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to create user: ${err.message}` });
+  }
+});
+
+app.put("/api/users/:uid", (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { email, displayName, passwordHash, role, status } = req.body;
+
+    const users = loadServerUsers();
+    const index = users.findIndex((u: any) => u.uid === uid || u.email.toLowerCase() === (email || "").toLowerCase());
+
+    if (index === -1) {
+      res.status(404).json({ error: "User not found." });
+      return;
+    }
+
+    const current = users[index];
+    const updated = {
+      ...current,
+      ...(email ? { email: email.trim().toLowerCase() } : {}),
+      ...(displayName ? { displayName: displayName.trim() } : {}),
+      ...(passwordHash ? { passwordHash: passwordHash.trim() } : {}),
+      ...(role ? { role } : {}),
+      ...(status ? { status } : {})
+    };
+
+    users[index] = updated;
+    saveServerUsers(users);
+
+    res.json({ success: true, user: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to update user: ${err.message}` });
+  }
+});
+
+app.delete("/api/users/:uid", (req, res) => {
+  try {
+    const { uid } = req.params;
+    let users = loadServerUsers();
+
+    const initialLen = users.length;
+    users = users.filter((u: any) => u.uid !== uid);
+
+    if (users.length === initialLen) {
+      res.status(404).json({ error: "User not found." });
+      return;
+    }
+
+    saveServerUsers(users);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to delete user: ${err.message}` });
+  }
+});
+
+app.post("/api/auth/login", (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email) {
+      res.status(400).json({ error: "Email address is required." });
+      return;
+    }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    const users = loadServerUsers();
+
+    const user = users.find((u: any) => u.email.toLowerCase() === trimmedEmail);
+
+    if (!user) {
+      res.status(401).json({ error: "Access Denied: This email address is not registered in the company employee directory." });
+      return;
+    }
+
+    if (user.passwordHash !== password) {
+      res.status(401).json({ error: "Invalid email or password. Please verify your credentials." });
+      return;
+    }
+
+    if (user.status === "suspended") {
+      res.status(403).json({ error: "Your account has been suspended. Please contact the administrator." });
+      return;
+    }
+
+    res.json({ success: true, user });
+  } catch (err: any) {
+    res.status(500).json({ error: `Authentication error: ${err.message}` });
+  }
+});
+
+// Persistent Scans Store
+const SCANS_FILE_PATH = path.join(process.cwd(), "scans_store.json");
+
+function loadServerScans(): any[] {
+  try {
+    if (fs.existsSync(SCANS_FILE_PATH)) {
+      const data = fs.readFileSync(SCANS_FILE_PATH, "utf-8");
+      return JSON.parse(data) || [];
+    }
+  } catch (err) {
+    console.error("Error reading scans_store.json:", err);
+  }
+  return [];
+}
+
+function saveServerScans(scans: any[]) {
+  try {
+    fs.writeFileSync(SCANS_FILE_PATH, JSON.stringify(scans, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error writing scans_store.json:", err);
+  }
+}
+
+app.get("/api/scans", (req, res) => {
+  const scans = loadServerScans();
+  res.json({ scans });
+});
+
+app.post("/api/scans", (req, res) => {
+  try {
+    const scanData = req.body;
+    if (!scanData || !scanData.target) {
+      res.status(400).json({ error: "Invalid scan payload" });
+      return;
+    }
+
+    const scans = loadServerScans();
+    const newScan = {
+      id: scanData.id || `scan_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      ...scanData,
+      timestamp: scanData.timestamp || new Date().toISOString()
+    };
+
+    scans.unshift(newScan);
+    saveServerScans(scans);
+
+    res.json({ success: true, scan: newScan });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to save scan: ${err.message}` });
+  }
+});
+
+app.delete("/api/scans/:id", (req, res) => {
+  try {
+    const { id } = req.params;
+    let scans = loadServerScans();
+    scans = scans.filter((s: any) => s.id !== id);
+    saveServerScans(scans);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to delete scan: ${err.message}` });
+  }
+});
+
+// Persistent Monitored IPs Store
+const MONITORED_IPS_FILE_PATH = path.join(process.cwd(), "monitored_ips_store.json");
+
+function loadServerMonitoredIPs(): any[] {
+  try {
+    if (fs.existsSync(MONITORED_IPS_FILE_PATH)) {
+      const data = fs.readFileSync(MONITORED_IPS_FILE_PATH, "utf-8");
+      return JSON.parse(data) || [];
+    }
+  } catch (err) {
+    console.error("Error reading monitored_ips_store.json:", err);
+  }
+  return [];
+}
+
+function saveServerMonitoredIPs(ips: any[]) {
+  try {
+    fs.writeFileSync(MONITORED_IPS_FILE_PATH, JSON.stringify(ips, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error writing monitored_ips_store.json:", err);
+  }
+}
+
+app.get("/api/monitored-ips", (req, res) => {
+  const ips = loadServerMonitoredIPs();
+  res.json({ ips });
+});
+
+app.post("/api/monitored-ips", (req, res) => {
+  try {
+    const ipData = req.body;
+    if (!ipData || !ipData.ipOrCidr) {
+      res.status(400).json({ error: "Invalid IP data payload" });
+      return;
+    }
+
+    const ips = loadServerMonitoredIPs();
+    const newIP = {
+      id: ipData.id || `ip_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      ...ipData
+    };
+
+    const existingIndex = ips.findIndex((i: any) => i.id === newIP.id || i.ipOrCidr === newIP.ipOrCidr);
+    if (existingIndex >= 0) {
+      ips[existingIndex] = { ...ips[existingIndex], ...newIP };
+    } else {
+      ips.unshift(newIP);
+    }
+
+    saveServerMonitoredIPs(ips);
+    res.json({ success: true, ip: newIP });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to save monitored IP: ${err.message}` });
+  }
+});
+
+app.put("/api/monitored-ips/:id", (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+    const ips = loadServerMonitoredIPs();
+
+    const index = ips.findIndex((i: any) => i.id === id);
+    if (index === -1) {
+      res.status(404).json({ error: "Monitored IP not found" });
+      return;
+    }
+
+    ips[index] = { ...ips[index], ...updateData };
+    saveServerMonitoredIPs(ips);
+
+    res.json({ success: true, ip: ips[index] });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to update monitored IP: ${err.message}` });
+  }
+});
+
+app.delete("/api/monitored-ips/:id", (req, res) => {
+  try {
+    const { id } = req.params;
+    let ips = loadServerMonitoredIPs();
+    ips = ips.filter((i: any) => i.id !== id);
+    saveServerMonitoredIPs(ips);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to delete monitored IP: ${err.message}` });
+  }
+});
+
+// API: Get Daily Blacklist Reports
+const DAILY_REPORTS_FILE_PATH = path.join(process.cwd(), "daily_reports_store.json");
+
+function loadServerDailyReports(): any[] {
+  try {
+    if (fs.existsSync(DAILY_REPORTS_FILE_PATH)) {
+      const data = fs.readFileSync(DAILY_REPORTS_FILE_PATH, "utf-8");
+      return JSON.parse(data) || [];
+    }
+  } catch (err) {
+    console.error("Error reading daily_reports_store.json:", err);
+  }
+  return [];
+}
+
+function saveServerDailyReport(report: any) {
+  try {
+    const reports = loadServerDailyReports();
+    const index = reports.findIndex((r: any) => r.id === report.id || r.date === report.date);
+    if (index >= 0) {
+      reports[index] = { ...reports[index], ...report };
+    } else {
+      reports.unshift(report);
+    }
+    fs.writeFileSync(DAILY_REPORTS_FILE_PATH, JSON.stringify(reports, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error writing daily_reports_store.json:", err);
+  }
+}
+
+app.get("/api/reports/daily", async (req, res) => {
+  const reportsMap = new Map<string, any>();
+  
+  // 1. Load local server reports
+  const localReports = loadServerDailyReports();
+  localReports.forEach(r => {
+    if (r && (r.id || r.date)) {
+      reportsMap.set(r.id || r.date, r);
+    }
+  });
+
+  // 2. Load Firestore reports if available
+  if (serverDb) {
+    try {
+      const querySnapshot = await Promise.race([
+        getDocs(collection(serverDb, "daily_reports")),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+      ]);
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+        const id = doc.id;
+        reportsMap.set(id, { id, ...data });
+      });
+    } catch (err: any) {
+      console.warn("Firestore daily_reports fetch skipped:", err.message);
+    }
+  }
+
+  const reports = Array.from(reportsMap.values());
+  reports.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  res.json({ reports });
 });
 
 // API: Manually Trigger / Generate Daily Report
 app.post("/api/reports/daily/generate", async (req, res) => {
-  if (!serverDb) {
-    res.status(503).json({ error: "Firebase server connection is pending configuration." });
-    return;
-  }
   try {
     // Run the daemon first to refresh all monitored hosts
     await runMonitoringDaemon();
@@ -1636,15 +2019,7 @@ try {
           console.log(`[WolastShield] Real-time monitor interval synced: ${systemConfig.monitorInterval} min`);
         }
       } else {
-        // Create default document if it doesn't exist
-        setDoc(doc(serverDb, "system_settings", "global"), {
-          dnsResolvers: "1.1.1.1, 8.8.8.8, 9.9.9.9",
-          monitorInterval: "10"
-        }).then(() => {
-          console.log("[WolastShield] Initialized default global system settings in Firestore.");
-        }).catch(err => {
-          console.error("[WolastShield] Failed to initialize default settings in Firestore:", err);
-        });
+        console.log("[WolastShield] Global system settings initialized in memory.");
       }
     }, (error) => {
       console.error("[WolastShield] Error listening to system_settings:", error);
@@ -1659,16 +2034,33 @@ try {
 
 // Reports compiler helper
 async function generateDailyReportInternal(dbRef: any) {
-  if (!dbRef) return null;
   const todayStr = new Date().toISOString().split('T')[0];
   console.log(`[WolastShield Reports] Compiling daily blacklist report for ${todayStr}...`);
   
   try {
-    const querySnapshot = await getDocs(collection(dbRef, "monitored_ips"));
-    const monitoredList: any[] = [];
-    querySnapshot.forEach((doc) => {
-      monitoredList.push({ id: doc.id, ...doc.data() });
+    const monitoredListMap = new Map<string, any>();
+    
+    // 1. Load from server local store
+    loadServerMonitoredIPs().forEach((item: any) => {
+      if (item && item.id) monitoredListMap.set(item.id, item);
     });
+
+    // 2. Load from Firestore if available
+    if (dbRef) {
+      try {
+        const querySnapshot = await Promise.race([
+          getDocs(collection(dbRef, "monitored_ips")),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+        ]);
+        querySnapshot.forEach((doc) => {
+          monitoredListMap.set(doc.id, { id: doc.id, ...doc.data() });
+        });
+      } catch (fErr: any) {
+        console.warn(`[WolastShield Reports] Firestore getDocs skipped: ${fErr.message}`);
+      }
+    }
+
+    const monitoredList = Array.from(monitoredListMap.values());
 
     let totalMonitoredIPs = 0;
     let totalTargets = monitoredList.length;
@@ -1723,8 +2115,10 @@ async function generateDailyReportInternal(dbRef: any) {
       summary
     };
 
-    await setDoc(doc(dbRef, "daily_reports", `report_${todayStr}`), sanitizeFirestoreData(reportData), { merge: true });
-    console.log(`[WolastShield Reports] Daily report saved successfully for ${todayStr}.`);
+    // Save to local daily reports store
+    saveServerDailyReport(reportData);
+
+    console.log(`[WolastShield Reports] Daily report compiled for ${todayStr}.`);
     return reportData;
   } catch (err) {
     console.error("[WolastShield Reports] Error compiling daily report:", err);
@@ -1756,16 +2150,34 @@ function sanitizeFirestoreData(data: any): any {
 
 // Background Monitoring Daemon
 async function runMonitoringDaemon() {
-  if (!serverDb) return;
   console.log("[WolastShield Daemon] Running automated background blacklist reputation check cycle...");
   try {
-    const querySnapshot = await getDocs(collection(serverDb, "monitored_ips"));
-    const monitoredList: any[] = [];
-    querySnapshot.forEach((doc) => {
-      monitoredList.push({ id: doc.id, ...doc.data() });
+    const monitoredListMap = new Map<string, any>();
+
+    // Load from local store
+    loadServerMonitoredIPs().forEach((item: any) => {
+      if (item && item.id) monitoredListMap.set(item.id, item);
     });
 
+    // Load from Firestore if available
+    if (serverDb) {
+      try {
+        const querySnapshot = await Promise.race([
+          getDocs(collection(serverDb, "monitored_ips")),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+        ]);
+        querySnapshot.forEach((doc) => {
+          monitoredListMap.set(doc.id, { id: doc.id, ...doc.data() });
+        });
+      } catch (fErr: any) {
+        console.warn(`[WolastShield Daemon] Firestore getDocs skipped: ${fErr.message}`);
+      }
+    }
+
+    const monitoredList = Array.from(monitoredListMap.values());
     console.log(`[WolastShield Daemon] Found ${monitoredList.length} monitored nodes to evaluate.`);
+
+    const updatedIPsList = [...loadServerMonitoredIPs()];
 
     for (const item of monitoredList) {
       console.log(`[WolastShield Daemon] Checking reputation for: ${item.ipOrCidr} (${item.label})`);
@@ -1863,37 +2275,31 @@ async function runMonitoringDaemon() {
 
       const listings = dbResults[0]?.listings || {};
 
-      // Update in Firestore
-      const ipDocRef = doc(serverDb, "monitored_ips", item.id);
-      const updatePayload = sanitizeFirestoreData({
+      const updatedFields = {
+        ...item,
         status: newStatus,
         listedCount,
         listings,
         totalIPs: results.length,
         blacklistedIPs,
         lastChecked: new Date().toISOString()
-      });
+      };
 
-      await updateDoc(ipDocRef, updatePayload);
+      // Update in local array
+      const idx = updatedIPsList.findIndex(u => u.id === item.id);
+      if (idx >= 0) {
+        updatedIPsList[idx] = updatedFields;
+      } else {
+        updatedIPsList.push(updatedFields);
+      }
 
-      // If status changed and it is not a first run, create alert notification in Firestore
       if (oldStatus !== "unknown" && oldStatus !== newStatus) {
         console.log(`[WolastShield Daemon] DETECTED STATUS CHANGE for ${item.ipOrCidr}: ${oldStatus} -> ${newStatus}`);
-        
-        const newNotification = sanitizeFirestoreData({
-          ip: item.ipOrCidr || "",
-          oldStatus,
-          newStatus,
-          listedCount,
-          timestamp: new Date().toISOString(),
-          read: false,
-          userId: item.createdBy || null
-        });
-
-        await addDoc(collection(serverDb, "notifications"), newNotification);
       }
     }
     
+    saveServerMonitoredIPs(updatedIPsList);
+
     // Auto compile/generate daily blacklist report for today
     await generateDailyReportInternal(serverDb);
     console.log("[WolastShield Daemon] Automated background blacklist check cycle complete.");
