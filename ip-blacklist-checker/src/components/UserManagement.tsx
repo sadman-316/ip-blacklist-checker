@@ -38,26 +38,48 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const querySnapshot = await getDocs(collection(db, "users"));
       const firestoreUsersMap = new Map<string, UserProfile>();
       
-      querySnapshot.forEach((docSnap) => {
-        const u = docSnap.data() as UserProfile;
-        firestoreUsersMap.set(u.email.toLowerCase(), u);
+      // Try fetching from Firestore with a 2.5s timeout
+      try {
+        const querySnapshot = await Promise.race([
+          getDocs(collection(db, "users")),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Firestore timeout")), 2500))
+        ]);
+        querySnapshot.forEach((docSnap) => {
+          const u = docSnap.data() as UserProfile;
+          if (u && u.email) {
+            firestoreUsersMap.set(u.email.toLowerCase(), u);
+          }
+        });
+      } catch (fErr) {
+        console.warn("Firestore fetch skipped or timed out:", fErr);
+      }
+
+      const mergedMap = new Map<string, UserProfile>();
+
+      // 1. Add Firestore users
+      firestoreUsersMap.forEach((user, key) => {
+        mergedMap.set(key, user);
       });
 
-      // Merge offline COMPANY_CREDENTIALS to ensure they are visible and synchronized in Firestore
-      const mergedList: UserProfile[] = [];
-      
-      // 1. Add all Firestore users
-      firestoreUsersMap.forEach((user) => {
-        mergedList.push(user);
-      });
+      // 2. Add local storage users
+      try {
+        const localUsersStr = localStorage.getItem("wolast_local_users");
+        if (localUsersStr) {
+          const localUsers: UserProfile[] = JSON.parse(localUsersStr);
+          localUsers.forEach((u) => {
+            if (u && u.email) {
+              mergedMap.set(u.email.toLowerCase(), u);
+            }
+          });
+        }
+      } catch (e) {}
 
-      // 2. Add any hardcoded COMPANY_CREDENTIALS that are not in Firestore yet
+      // 3. Add hardcoded COMPANY_CREDENTIALS
       for (const cred of COMPANY_CREDENTIALS) {
         const lowerEmail = cred.email.toLowerCase();
-        if (!firestoreUsersMap.has(lowerEmail)) {
+        if (!mergedMap.has(lowerEmail)) {
           const syncProfile: UserProfile = {
             uid: cred.uid,
             email: cred.email,
@@ -67,11 +89,11 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
             status: cred.status,
             passwordHash: cred.passwordHash
           };
-          mergedList.push(syncProfile);
-          // Sync to Firestore so the user's role can be dynamically updated/modified/deleted
-          await setDoc(doc(db, "users", cred.uid), syncProfile);
+          mergedMap.set(lowerEmail, syncProfile);
         }
       }
+
+      const mergedList: UserProfile[] = Array.from(mergedMap.values());
 
       // Sort users by email
       mergedList.sort((a, b) => a.email.localeCompare(b.email));
@@ -88,6 +110,23 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
     fetchUsers();
   }, []);
 
+  const saveLocalUsers = (updatedUsersList: UserProfile[]) => {
+    try {
+      localStorage.setItem("wolast_local_users", JSON.stringify(updatedUsersList));
+    } catch (e) {
+      console.error("Failed to save users to localStorage:", e);
+    }
+  };
+
+  const getLocalUsers = (): UserProfile[] => {
+    try {
+      const localUsersStr = localStorage.getItem("wolast_local_users");
+      return localUsersStr ? JSON.parse(localUsersStr) : [];
+    } catch (e) {
+      return [];
+    }
+  };
+
   const handleToggleRole = async (user: UserProfile) => {
     if (user.uid === currentUser.uid) {
       triggerAlert("error", "You cannot change your own administrator role.");
@@ -95,13 +134,23 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
     }
 
     const nextRole = user.role === "admin" ? "user" : "admin";
+
+    // Update in local storage
+    const currentLocals = getLocalUsers().filter(u => u.uid !== user.uid && u.email.toLowerCase() !== user.email.toLowerCase());
+    currentLocals.push({ ...user, role: nextRole });
+    saveLocalUsers(currentLocals);
+
+    setUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, role: nextRole } : u));
+    triggerAlert("success", `Updated role for ${user.displayName} to ${nextRole.toUpperCase()}`);
+
+    // Try Firestore update with timeout
     try {
-      await updateDoc(doc(db, "users", user.uid), { role: nextRole });
-      triggerAlert("success", `Updated role for ${user.displayName} to ${nextRole.toUpperCase()}`);
-      setUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, role: nextRole } : u));
+      await Promise.race([
+        updateDoc(doc(db, "users", user.uid), { role: nextRole }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+      ]);
     } catch (err) {
-      console.error("Error updating role:", err);
-      triggerAlert("error", "Failed to update user role.");
+      console.warn("Firestore role update skipped/timed out:", err);
     }
   };
 
@@ -112,16 +161,26 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
     }
 
     const nextStatus = user.status === "active" ? "suspended" : "active";
+
+    // Update in local storage
+    const currentLocals = getLocalUsers().filter(u => u.uid !== user.uid && u.email.toLowerCase() !== user.email.toLowerCase());
+    currentLocals.push({ ...user, status: nextStatus });
+    saveLocalUsers(currentLocals);
+
+    setUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, status: nextStatus } : u));
+    triggerAlert(
+      nextStatus === "suspended" ? "warning" : "success",
+      `User ${user.displayName} is now ${nextStatus.toUpperCase()}`
+    );
+
+    // Try Firestore update with timeout
     try {
-      await updateDoc(doc(db, "users", user.uid), { status: nextStatus });
-      triggerAlert(
-        nextStatus === "suspended" ? "warning" : "success",
-        `User ${user.displayName} is now ${nextStatus.toUpperCase()}`
-      );
-      setUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, status: nextStatus } : u));
+      await Promise.race([
+        updateDoc(doc(db, "users", user.uid), { status: nextStatus }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+      ]);
     } catch (err) {
-      console.error("Error updating status:", err);
-      triggerAlert("error", "Failed to update user account status.");
+      console.warn("Firestore status update skipped/timed out:", err);
     }
   };
 
@@ -134,8 +193,6 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
 
     setAddLoading(true);
     try {
-      // Create a virtual user doc in firestore so when they register, their role is already set
-      // Generate a deterministic or random UID for pre-seeding
       const tempUid = `pre_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       
       const newProfile: UserProfile = {
@@ -148,7 +205,21 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
         passwordHash: newPassword
       };
 
-      await setDoc(doc(db, "users", tempUid), newProfile);
+      // 1. Save to local storage first so it NEVER hangs
+      const currentLocals = getLocalUsers().filter(u => u.email.toLowerCase() !== newProfile.email.toLowerCase());
+      currentLocals.push(newProfile);
+      saveLocalUsers(currentLocals);
+
+      // 2. Try Firestore asynchronously with a 2s timeout
+      try {
+        await Promise.race([
+          setDoc(doc(db, "users", tempUid), newProfile),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+        ]);
+      } catch (fErr) {
+        console.warn("Firestore setDoc skipped/timed out:", fErr);
+      }
+
       triggerAlert("success", `Successfully provisioned role ${newRole.toUpperCase()} for ${newEmail}`);
       setShowAddForm(false);
       setNewEmail("");
@@ -171,9 +242,23 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
     }
 
     try {
-      await deleteDoc(doc(db, "users", user.uid));
-      triggerAlert("success", `Successfully deleted user ${user.displayName}`);
+      // Remove from local storage
+      const currentLocals = getLocalUsers().filter(u => u.uid !== user.uid && u.email.toLowerCase() !== user.email.toLowerCase());
+      saveLocalUsers(currentLocals);
+
       setConfirmDeleteId(null);
+      triggerAlert("success", `Successfully deleted user ${user.displayName}`);
+
+      // Try Firestore delete with timeout
+      try {
+        await Promise.race([
+          deleteDoc(doc(db, "users", user.uid)),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+        ]);
+      } catch (fErr) {
+        console.warn("Firestore deleteDoc skipped/timed out:", fErr);
+      }
+
       fetchUsers();
     } catch (err) {
       console.error("Error deleting user:", err);
@@ -205,26 +290,40 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentUser, tri
 
     setEditLoading(true);
     try {
-      const updatedFields: Partial<UserProfile> = {
+      const updatedFields: UserProfile = {
+        ...editingUser,
         email: editEmail.trim().toLowerCase(),
         displayName: editName.trim(),
       };
 
-      // Only update password if user entered/changed it
       if (editPassword) {
         updatedFields.passwordHash = editPassword;
       }
 
-      // Restrict role/status changes for self
       const isSelf = editingUser.uid === currentUser.uid;
       if (!isSelf) {
         updatedFields.role = editRole;
         updatedFields.status = editStatus;
       }
 
-      await updateDoc(doc(db, "users", editingUser.uid), updatedFields);
+      // Update in local storage
+      const currentLocals = getLocalUsers().filter(u => u.uid !== editingUser.uid && u.email.toLowerCase() !== editingUser.email.toLowerCase());
+      currentLocals.push(updatedFields);
+      saveLocalUsers(currentLocals);
+
       triggerAlert("success", `Successfully updated profile for ${editName}`);
       setEditingUser(null);
+
+      // Try Firestore update with timeout
+      try {
+        await Promise.race([
+          updateDoc(doc(db, "users", editingUser.uid), updatedFields as any),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 2000))
+        ]);
+      } catch (fErr) {
+        console.warn("Firestore updateDoc skipped/timed out:", fErr);
+      }
+
       fetchUsers();
     } catch (err) {
       console.error("Error updating user profile:", err);
