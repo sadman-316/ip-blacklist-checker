@@ -1222,34 +1222,34 @@ export default function App() {
               </section>
 
               {/* Right Mini Score/Status Bento Panel */}
-              <section className="xl:w-[380px] w-full bg-white p-6 sm:p-8 rounded-2xl cyber-card flex flex-col justify-between gap-5 transition-all duration-300">
+              <section className="xl:w-[380px] w-full bg-white dark:bg-zinc-900 p-6 sm:p-8 rounded-2xl cyber-card flex flex-col justify-between gap-5 transition-all duration-300 border border-slate-200 dark:border-zinc-800 shadow-md relative overflow-hidden before:absolute before:top-0 before:left-0 before:right-0 before:h-1 before:bg-gradient-to-r before:from-red-600 before:to-amber-500">
                 <div>
-                  <h3 className="text-xs font-black text-slate-700 uppercase tracking-widest">Subnet Reputation Index</h3>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-1">Summary of evaluated network assets</p>
+                  <h3 className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-widest">Subnet Reputation Index</h3>
+                  <p className="text-[10px] text-slate-600 dark:text-zinc-300 font-extrabold uppercase tracking-wider mt-1">Summary of evaluated network assets</p>
                 </div>
 
                 <div className="grid grid-cols-3 gap-3 py-1">
-                  <div className="text-center py-1.5 bg-slate-50/40 dark:bg-black/40 rounded-xl border border-slate-100/10">
-                    <p className="text-[9px] uppercase font-black text-slate-400 tracking-wider">Total IPs</p>
-                    <p className="text-2xl font-black text-slate-850 dark:text-zinc-100 font-mono mt-1">
+                  <div className="text-center py-2.5 bg-slate-50 dark:bg-zinc-800/80 rounded-xl border border-slate-200 dark:border-zinc-700/80 shadow-xs">
+                    <p className="text-[9px] uppercase font-black text-slate-600 dark:text-zinc-300 tracking-wider">Total IPs</p>
+                    <p className="text-2xl font-black text-slate-900 dark:text-white font-mono mt-1">
                       {report ? report.totalIPs : '0'}
                     </p>
                   </div>
-                  <div className="text-center py-1.5 bg-slate-50/40 dark:bg-black/40 rounded-xl border border-slate-100/10">
-                    <p className="text-[9px] uppercase font-black text-red-500 tracking-wider">Listed</p>
-                    <p className="text-2xl font-black text-rose-600 font-mono mt-1">
+                  <div className="text-center py-2.5 bg-slate-50 dark:bg-zinc-800/80 rounded-xl border border-slate-200 dark:border-zinc-700/80 shadow-xs">
+                    <p className="text-[9px] uppercase font-black text-red-600 dark:text-red-400 tracking-wider">Listed</p>
+                    <p className="text-2xl font-black text-red-600 dark:text-red-400 font-mono mt-1">
                       {report ? report.listedCount : '0'}
                     </p>
                   </div>
-                  <div className="text-center py-1.5 bg-slate-50/40 dark:bg-black/40 rounded-xl border border-slate-100/10">
-                    <p className="text-[9px] uppercase font-black text-emerald-500 tracking-wider">Clean</p>
-                    <p className="text-2xl font-black text-emerald-600 font-mono mt-1">
+                  <div className="text-center py-2.5 bg-slate-50 dark:bg-zinc-800/80 rounded-xl border border-slate-200 dark:border-zinc-700/80 shadow-xs">
+                    <p className="text-[9px] uppercase font-black text-emerald-600 dark:text-emerald-400 tracking-wider">Clean</p>
+                    <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400 font-mono mt-1">
                       {report ? report.cleanCount : '0'}
                     </p>
                   </div>
                 </div>
 
-                <div className="bg-slate-950 px-4 py-3 rounded-xl border border-slate-900 flex items-center justify-between text-[11px] text-slate-400 font-black uppercase tracking-wider shadow-inner">
+                <div className="bg-slate-950 px-4 py-3 rounded-xl border border-slate-900 flex items-center justify-between text-[11px] text-slate-200 font-black uppercase tracking-wider shadow-inner">
                   <span>Reputation Status:</span>
                   <span className={`font-mono font-black text-xs ${healthScore >= 95 ? 'text-emerald-400' : healthScore >= 80 ? 'text-amber-400' : 'text-rose-400'}`}>
                     {healthScore}% Secure
@@ -1266,9 +1266,9 @@ export default function App() {
                 <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5" id="bento-metrics">
                   
                   {/* Metric 1: Health Index Meter */}
-                  <div className="bg-white rounded-2xl p-6 cyber-card flex flex-col items-center justify-center text-center relative overflow-hidden min-h-[190px] transition-all duration-300">
-                    <div className="absolute top-3.5 left-3.5 bg-slate-100 dark:bg-zinc-900 rounded-lg p-1.5 border border-slate-200/50 dark:border-zinc-800">
-                      <Shield className="w-4 h-4 text-red-500" />
+                  <div className="bg-white dark:bg-zinc-900 rounded-2xl p-6 cyber-card flex flex-col items-center justify-center text-center relative overflow-hidden min-h-[210px] shadow-md hover:shadow-xl transition-all duration-300 border border-slate-200 dark:border-zinc-800 before:absolute before:top-0 before:left-0 before:right-0 before:h-1 before:bg-slate-900 dark:before:bg-zinc-700">
+                    <div className="absolute top-3.5 left-3.5 bg-slate-100 dark:bg-zinc-800 rounded-lg p-2 border border-slate-200 dark:border-zinc-700 shadow-xs">
+                      <Shield className="w-4 h-4 text-red-600 dark:text-red-500" />
                     </div>
                     
                     {/* SVG Radial Progress Ring */}
@@ -1276,8 +1276,8 @@ export default function App() {
                       <svg className="w-full h-full transform -rotate-90">
                         <circle 
                           cx="48" cy="48" r="38" 
-                          className="text-slate-100 dark:text-zinc-800" 
-                          strokeWidth="7" stroke="currentColor" fill="transparent" 
+                          className="text-slate-200 dark:text-zinc-800" 
+                          strokeWidth="8" stroke="currentColor" fill="transparent" 
                         />
                         <circle 
                           cx="48" cy="48" r="38" 
@@ -1285,70 +1285,75 @@ export default function App() {
                             healthScore >= 95 ? "text-emerald-500" :
                             healthScore >= 80 ? "text-amber-500" : "text-red-500"
                           } 
-                          strokeWidth="7" strokeDasharray={2 * Math.PI * 38} 
+                          strokeWidth="8" strokeDasharray={2 * Math.PI * 38} 
                           strokeDashoffset={2 * Math.PI * 38 * (1 - healthScore / 100)} 
                           strokeLinecap="round" stroke="currentColor" fill="transparent" 
                         />
                       </svg>
                       <div className="absolute inset-0 flex flex-col items-center justify-center">
-                        <span className="text-xl font-black text-slate-800 dark:text-zinc-100 font-mono">{healthScore}%</span>
-                        <span className="text-[9px] text-slate-450 dark:text-zinc-400 font-black uppercase tracking-widest">Clean</span>
+                        <span className={`text-2xl font-black font-mono ${healthScore >= 95 ? 'text-emerald-600 dark:text-emerald-400' : healthScore >= 80 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'}`}>{healthScore}%</span>
+                        <span className="text-[10px] text-slate-800 dark:text-zinc-200 font-extrabold uppercase tracking-widest">Clean</span>
                       </div>
                     </div>
                     <div className="mt-3">
-                      <h3 className="text-xs font-black text-slate-700 dark:text-zinc-350 uppercase tracking-widest">Subnet Rep Score</h3>
-                      <p className="text-[10px] text-slate-400 mt-1">Ratio of clean, non-blacklisted assets.</p>
+                      <h3 className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-widest">Subnet Rep Score</h3>
+                      <p className="text-[10px] text-slate-600 dark:text-zinc-300 mt-1 font-extrabold">Ratio of clean, non-blacklisted assets.</p>
                     </div>
                   </div>
 
                   {/* Metric 2: Scanned Total Assets */}
-                  <div className="bg-white rounded-2xl p-6 cyber-card flex flex-col justify-between min-h-[190px] transition-all duration-300">
+                  <div className="bg-white dark:bg-zinc-900 rounded-2xl p-6 cyber-card flex flex-col justify-between min-h-[210px] shadow-md hover:shadow-xl transition-all duration-300 border border-slate-200 dark:border-zinc-800 before:absolute before:top-0 before:left-0 before:right-0 before:h-1 before:bg-slate-900 dark:before:bg-zinc-700">
                     <div className="flex justify-between items-start">
-                      <div className="bg-slate-100 dark:bg-zinc-900 rounded-lg p-1.5 border border-slate-200/50 dark:border-zinc-800">
-                        <Database className="w-4 h-4 text-red-500" />
+                      <div className="bg-slate-100 dark:bg-zinc-800 rounded-lg p-2 border border-slate-200 dark:border-zinc-700 shadow-xs">
+                        <Database className="w-4 h-4 text-red-600 dark:text-red-500" />
                       </div>
                       {simulate && (
-                        <span className="text-[9px] bg-red-500/10 text-red-500 px-2 py-0.5 rounded-lg font-black uppercase tracking-widest border border-red-500/20">Demo</span>
+                        <span className="text-[10px] bg-red-500/10 text-red-600 dark:text-red-400 px-2.5 py-0.8 rounded-lg font-black uppercase tracking-widest border border-red-500/20 shadow-xs">Demo</span>
                       )}
                     </div>
-                    <div>
-                      <span className="text-3xl font-black text-slate-850 dark:text-zinc-100 font-mono block leading-none">{report.totalIPs}</span>
-                      <span className="text-xs font-black text-slate-700 dark:text-zinc-350 uppercase tracking-widest block mt-2">Scanned Nodes</span>
-                      <p className="text-[10px] text-slate-400 mt-1 font-semibold leading-relaxed">Total active host IPs evaluated within target scope.</p>
+                    <div className="mt-3">
+                      <span className="text-5xl font-black text-slate-900 dark:text-white font-mono block leading-none">{report.totalIPs}</span>
+                      <span className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-widest block mt-3">Scanned Nodes</span>
+                      <p className="text-[10px] text-slate-600 dark:text-zinc-300 mt-1 font-extrabold leading-relaxed">Total active host IPs evaluated within target scope.</p>
                     </div>
                   </div>
 
                   {/* Metric 3: Listed Threats */}
-                  <div className="bg-white rounded-2xl p-6 cyber-card flex flex-col justify-between min-h-[190px] border-l-4 border-l-red-500 transition-all duration-300">
+                  <div className={`bg-white dark:bg-zinc-900 rounded-2xl p-6 cyber-card flex flex-col justify-between min-h-[210px] shadow-md hover:shadow-xl transition-all duration-300 border border-slate-200 dark:border-zinc-800 relative overflow-hidden before:absolute before:top-0 before:left-0 before:right-0 before:h-1 ${report.listedCount > 0 ? 'before:bg-red-600 border-l-4 border-l-red-600 dark:border-l-red-500' : 'before:bg-emerald-500'}`}>
                     <div className="flex justify-between items-start">
-                      <div className="bg-red-50 dark:bg-red-950/20 rounded-lg p-1.5 border border-red-200/50 dark:border-red-900/35">
-                        <ShieldAlert className="w-4 h-4 text-red-500" />
+                      <div className="bg-red-50 dark:bg-red-950/50 rounded-lg p-2 border border-red-200 dark:border-red-900/50 shadow-xs">
+                        <ShieldAlert className="w-4 h-4 text-red-600 dark:text-red-400" />
                       </div>
                       {report.listedCount > 0 ? (
-                        <span className="text-[9px] bg-red-500/10 text-red-400 px-2.5 py-0.8 rounded-lg font-black uppercase tracking-widest flex items-center gap-1 border border-red-500/20">
-                          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-ping" />
+                        <span className="text-[10px] bg-red-500/15 text-red-700 dark:text-red-400 px-2.5 py-0.8 rounded-lg font-black uppercase tracking-widest flex items-center gap-1.5 border border-red-500/30 shadow-xs">
+                          <span className="w-2 h-2 rounded-full bg-red-600 dark:bg-red-500 animate-ping" />
                           Action Req.
                         </span>
                       ) : (
-                        <span className="text-[9px] bg-emerald-500/10 text-emerald-500 px-2.5 py-0.8 rounded-lg font-black uppercase tracking-widest border border-emerald-500/20">Secure</span>
+                        <span className="text-[10px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 px-2.5 py-0.8 rounded-lg font-black uppercase tracking-widest border border-emerald-500/30 shadow-xs">Secure</span>
                       )}
                     </div>
-                    <div>
-                      <span className={`text-3xl font-black font-mono block leading-none ${report.listedCount > 0 ? 'text-red-500' : 'text-slate-850 dark:text-zinc-100'}`}>{report.listedCount}</span>
-                      <span className="text-xs font-black text-slate-700 dark:text-zinc-350 uppercase tracking-widest block mt-2">Blacklisted IPs</span>
-                      <p className="text-[10px] text-slate-400 mt-1 font-semibold leading-relaxed">IP nodes actively reported in one or more DNSBL blocklists.</p>
+                    <div className="mt-3">
+                      <span className={`text-5xl font-black font-mono block leading-none ${report.listedCount > 0 ? 'text-red-600 dark:text-red-400' : 'text-slate-900 dark:text-white'}`}>{report.listedCount}</span>
+                      <span className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-widest block mt-3">Blacklisted IPs</span>
+                      <p className="text-[10px] text-slate-600 dark:text-zinc-300 mt-1 font-extrabold leading-relaxed">IP nodes actively reported in one or more DNSBL blocklists.</p>
                     </div>
                   </div>
 
                   {/* Metric 4: Total Blacklist Registrations */}
-                  <div className="bg-white rounded-2xl p-6 cyber-card flex flex-col justify-between min-h-[190px] transition-all duration-300">
-                    <div className="bg-slate-100 dark:bg-zinc-900 rounded-lg p-1.5 border border-slate-200/50 dark:border-zinc-800 self-start">
-                      <Sliders className="w-4 h-4 text-red-500" />
+                  <div className="bg-white dark:bg-zinc-900 rounded-2xl p-6 cyber-card flex flex-col justify-between min-h-[210px] shadow-md hover:shadow-xl transition-all duration-300 border border-slate-200 dark:border-zinc-800 before:absolute before:top-0 before:left-0 before:right-0 before:h-1 before:bg-slate-900 dark:before:bg-zinc-700">
+                    <div className="flex justify-between items-start">
+                      <div className="bg-slate-100 dark:bg-zinc-800 rounded-lg p-2 border border-slate-200 dark:border-zinc-700 shadow-xs">
+                        <Sliders className="w-4 h-4 text-red-600 dark:text-red-500" />
+                      </div>
+                      <span className="text-[10px] bg-slate-900 dark:bg-zinc-800 text-white dark:text-zinc-200 px-2.5 py-0.8 rounded-lg font-black uppercase tracking-widest border border-slate-800 dark:border-zinc-700 shadow-xs">
+                        {BLACKLIST_PROVIDERS.length} RBLs
+                      </span>
                     </div>
-                    <div>
-                      <span className="text-3xl font-black text-slate-850 dark:text-zinc-100 font-mono block leading-none">{totalListingsCount}</span>
-                      <span className="text-xs font-black text-slate-700 dark:text-zinc-350 uppercase tracking-widest block mt-2">RBL Registrations</span>
-                      <p className="text-[10px] text-slate-400 mt-1 font-semibold leading-relaxed">Aggregated count of listings across all providers.</p>
+                    <div className="mt-3">
+                      <span className={`text-5xl font-black font-mono block leading-none ${totalListingsCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-900 dark:text-white'}`}>{totalListingsCount}</span>
+                      <span className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-widest block mt-3">RBL Registrations</span>
+                      <p className="text-[10px] text-slate-600 dark:text-zinc-300 mt-1 font-extrabold leading-relaxed">Aggregated count of listings across all providers.</p>
                     </div>
                   </div>
 
@@ -1397,7 +1402,7 @@ export default function App() {
                       <div className="p-4 bg-slate-50/80 rounded-xl border border-slate-200 flex gap-4 items-start">
                         <BookOpen className="w-8 h-8 text-blue-500 shrink-0 mt-0.5" />
                         <div className="space-y-1">
-                          <h4 className="text-xs font-bold text-slate-850 uppercase tracking-wide">Threat Mitigation guides</h4>
+                          <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide">Threat Mitigation guides</h4>
                           <p className="text-[11px] text-slate-500 font-bold leading-relaxed">
                             Access our expert system guides for specific removal procedures, post-infection mitigation steps, and official request links for the leading lists.
                           </p>
