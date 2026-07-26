@@ -146,7 +146,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({ currentUser, tri
             <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Registered Accounts</span>
             <HardDrive className="w-4 h-4 text-slate-400" />
           </div>
-          <div className="text-2xl font-black text-slate-850 font-mono">{dbStats.users}</div>
+          <div className="text-2xl font-black text-slate-900 font-mono">{dbStats.users}</div>
           <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block">Auth Profile Documents</span>
         </div>
 
@@ -155,7 +155,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({ currentUser, tri
             <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Monitored Hosts</span>
             <Network className="w-4 h-4 text-slate-400" />
           </div>
-          <div className="text-2xl font-black text-slate-850 font-mono">{dbStats.ips}</div>
+          <div className="text-2xl font-black text-slate-900 font-mono">{dbStats.ips}</div>
           <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block">IPs & CIDR Subnets</span>
         </div>
 
@@ -164,7 +164,7 @@ export const SystemSettings: React.FC<SystemSettingsProps> = ({ currentUser, tri
             <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Logged Warnings</span>
             <Cpu className="w-4 h-4 text-slate-400" />
           </div>
-          <div className="text-2xl font-black text-slate-850 font-mono">{dbStats.alerts}</div>
+          <div className="text-2xl font-black text-slate-900 font-mono">{dbStats.alerts}</div>
           <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block">RBL Reputation Alerts</span>
         </div>
       </div>
