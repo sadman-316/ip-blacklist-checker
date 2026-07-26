@@ -1578,7 +1578,7 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
               <div className="p-5 border-t border-slate-100 bg-slate-50/50 flex justify-end">
                 <button
                   onClick={() => setViewingIP(null)}
-                  className="px-5 py-2.5 bg-slate-850 hover:bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-sm transition-all cursor-pointer border-none"
+                  className="px-5 py-2.5 bg-slate-900 hover:bg-slate-950 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-sm transition-all cursor-pointer border-none"
                 >
                   Close Dashboard
                 </button>
