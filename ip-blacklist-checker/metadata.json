@@ -1,6 +1,0 @@
-{
-  "name": "Wolast Shield",
-  "description": "Enterprise-grade IP reputation, subnet blocklist monitoring, and delisting automation suite powered by Wolast Technologies.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
