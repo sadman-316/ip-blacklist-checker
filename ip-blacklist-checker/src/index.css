@@ -1,0 +1,155 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Base Body typography & clean Light Mode foundation */
+html, body {
+  font-family: "Inter", var(--font-sans);
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+/* Custom premium scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Modern Enterprise Cards & Bento Boxes */
+.cyber-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.04), 0 2px 6px -1px rgba(0, 0, 0, 0.02);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.cyber-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(220, 38, 38, 0.35);
+  box-shadow: 0 12px 24px -6px rgba(220, 38, 38, 0.07);
+}
+
+/* Core theme mapping: Remap Blues & Indigos to Cybersecurity Red & Slate */
+.bg-blue-600,
+.bg-indigo-600 {
+  background-color: #dc2626 !important; /* Cyber Red */
+}
+.bg-blue-500,
+.bg-indigo-500 {
+  background-color: #ef4444 !important; /* Vivid Red */
+}
+.text-blue-400,
+.text-indigo-400 {
+  color: #f87171 !important;
+}
+.text-blue-500,
+.text-indigo-500 {
+  color: #ef4444 !important;
+}
+.text-blue-600,
+.text-indigo-600 {
+  color: #dc2626 !important;
+}
+.border-blue-500,
+.border-blue-600,
+.border-indigo-600 {
+  border-color: #dc2626 !important;
+}
+
+.hover\:bg-blue-500:hover,
+.hover\:bg-indigo-500:hover,
+.bg-gradient-to-r:hover {
+  background-color: #b91c1c !important;
+  background-image: none !important;
+}
+
+.bg-blue-50 {
+  background-color: #fef2f2 !important;
+  color: #991b1b !important;
+  border-color: #fca5a5 !important;
+}
+.text-blue-800 {
+  color: #991b1b !important;
+}
+
+/* Gradient mappings */
+.from-blue-600 {
+  --tw-gradient-from: #dc2626 !important;
+}
+.to-indigo-600 {
+  --tw-gradient-to: #0f172a !important;
+}
+
+/* Interactive tables, forms, and inputs */
+input:focus, select:focus, textarea:focus {
+  border-color: #dc2626 !important;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12) !important;
+  outline: none;
+}
+
+/* Status Badges */
+.bg-emerald-50 {
+  background-color: #ecfdf5 !important;
+  color: #059669 !important;
+  border-color: #a7f3d0 !important;
+}
+.text-emerald-600 {
+  color: #059669 !important;
+}
+
+/* Threat / Alert status badges */
+.bg-rose-50, .bg-red-50 {
+  background-color: #fef2f2 !important;
+  color: #dc2626 !important;
+  border-color: #fecaca !important;
+}
+
+/* Custom animations & transitions */
+@keyframes spinSlow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spinSlow 12s linear infinite;
+}
+
+/* Button micro-interactions */
+.btn-cyber {
+  position: relative;
+  overflow: hidden;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  border: 1px solid transparent;
+}
+.btn-cyber::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 120%;
+  height: 120%;
+  background: rgba(255, 255, 255, 0.15);
+  transform: translate(-50%, -50%) scale(0);
+  border-radius: 50%;
+  transition: transform 0.4s ease-out;
+}
+.btn-cyber:active::after {
+  transform: translate(-50%, -50%) scale(1.5);
+  opacity: 0;
+  transition: transform 0s;
+}
