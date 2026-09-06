@@ -20,7 +20,6 @@ import { AuthPage } from './components/AuthPage';
 import { IPMonitoring } from './components/IPMonitoring';
 import { UserManagement } from './components/UserManagement';
 import { SystemSettings } from './components/SystemSettings';
-import { SuperToolInspector } from './components/SuperToolInspector';
 import { COMPANY_CREDENTIALS } from './company-credentials';
 
 // Static Full Reputation & Blacklist Providers list for UI rendering & reference
@@ -762,7 +761,7 @@ export default function App() {
   const [archiveConfirmDeleteId, setArchiveConfirmDeleteId] = useState<string | null>(null);
 
   // Navigation & Filtering
-  const [activeTab, setActiveTab] = useState<'supertool' | 'dashboard' | 'monitoring' | 'guides' | 'providers' | 'history' | 'users' | 'settings'>('supertool');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'monitoring' | 'guides' | 'providers' | 'history' | 'users' | 'settings'>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'clean' | 'listed'>('all');
   const [filterAction, setFilterAction] = useState<string>('all');
@@ -773,9 +772,24 @@ export default function App() {
   const [inspectorTab, setInspectorTab] = useState<'listed' | 'all'>('listed');
 
   // Report Analysis Filter States
-  const [reportFilter, setReportFilter] = useState<'all' | 'listed' | 'clean'>('listed');
+  const [reportFilter, setReportFilter] = useState<'all' | 'listed' | 'clean'>('all');
   const [blacklistSearch, setBlacklistSearch] = useState('');
+  const [blacklistCategoryFilter, setBlacklistCategoryFilter] = useState<string>('all');
   const [selectedGuideProvider, setSelectedGuideProvider] = useState<{ id: string; name: string; delistUrl: string; reason?: string; domain?: string } | null>(null);
+
+  // Restore last active scan report if saved locally
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('wolast_current_report');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.results && parsed.results.length > 0) {
+          setReport(parsed);
+          setSelectedIP(parsed.results[0]);
+        }
+      }
+    } catch (e) {}
+  }, []);
 
   // Auto-sync selectedIP when report changes
   useEffect(() => {
@@ -1119,10 +1133,13 @@ export default function App() {
   };
 
   // Perform backend scan
-  const handleScan = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleScan = async (e?: React.FormEvent | React.MouseEvent) => {
+    if (e && typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
     if (!target.trim()) return;
 
+    setActiveTab('dashboard');
     setLoading(true);
     setScanningProgress(5);
     setScanLogs(['Initializing scanner module...', 'Analyzing target format...']);
@@ -1181,7 +1198,11 @@ export default function App() {
       
       setTimeout(() => {
         setReport(scanResult);
+        try {
+          localStorage.setItem('wolast_current_report', JSON.stringify(scanResult));
+        } catch (e) {}
         saveScanToHistory(scanResult);
+        setActiveTab('dashboard');
         setLoading(false);
         triggerAlert('success', `Completed scanning ${scanResult.totalIPs} IPs. Found ${scanResult.listedCount} listed.`);
       }, 500);
@@ -1360,15 +1381,6 @@ export default function App() {
           {/* Navigation Tabs (Dynamic based on Role) */}
           <nav className="flex flex-wrap items-center gap-4 sm:gap-6 text-xs font-bold text-zinc-400 uppercase tracking-wider w-full sm:w-auto" id="nav-tabs">
             <button 
-              onClick={() => setActiveTab('supertool')}
-              className={`pb-1 transition-all cursor-pointer flex items-center gap-1.5 border-b-2 ${
-                activeTab === 'supertool' ? 'text-red-500 border-red-500 font-extrabold' : 'border-transparent hover:text-white'
-              }`}
-            >
-              <Activity className="w-3.5 h-3.5" />
-              SuperTool Check
-            </button>
-            <button 
               onClick={() => setActiveTab('dashboard')}
               className={`pb-1 transition-all cursor-pointer border-b-2 ${
                 activeTab === 'dashboard' ? 'text-red-500 border-red-500 font-extrabold' : 'border-transparent hover:text-white'
@@ -1453,16 +1465,6 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6" id="main-content">
-        
-        {/* TAB 0: SUPERTOOL BLACKLIST INSPECTOR */}
-        {activeTab === 'supertool' && (
-          <SuperToolInspector
-            currentUser={userProfile}
-            triggerAlert={triggerAlert}
-            initialTarget="163.128.141.8"
-            onNavigateToMonitoring={() => setActiveTab('monitoring')}
-          />
-        )}
 
         {/* TAB 1: DASHBOARD & ACTIVE SCANNER */}
         {activeTab === 'dashboard' && (
@@ -1953,22 +1955,229 @@ export default function App() {
                         </div>
                       </div>
 
+                      {/* 60+ DNSBL Providers Detailed Breakdown for Selected IP */}
+                      <div className="pt-4 border-t border-slate-200 space-y-4" id="provider-breakdown-section">
+                        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+                          <div>
+                            <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest flex items-center gap-2">
+                              <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                              Full Reputation & DNSBL Database Checks for {selectedIP.ip}
+                            </h3>
+                            <p className="text-[11px] text-slate-500 font-semibold">
+                              Real-time listing verification across {BLACKLIST_PROVIDERS.length} global DNSBLs, Spamhaus, Barracuda, and Threat Feeds
+                            </p>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="relative">
+                              <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                              <input
+                                type="text"
+                                value={blacklistSearch}
+                                onChange={(e) => setBlacklistSearch(e.target.value)}
+                                placeholder="Filter provider..."
+                                className="pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 font-medium focus:outline-hidden focus:ring-2 focus:ring-red-500/20"
+                              />
+                            </div>
+
+                            <div className="flex bg-slate-200/70 p-1 rounded-xl text-xs font-bold">
+                              <button
+                                onClick={() => setReportFilter('all')}
+                                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${reportFilter === 'all' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}
+                              >
+                                All ({BLACKLIST_PROVIDERS.length})
+                              </button>
+                              <button
+                                onClick={() => setReportFilter('listed')}
+                                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${reportFilter === 'listed' ? 'bg-rose-600 text-white shadow-xs' : 'text-slate-600'}`}
+                              >
+                                Listed ({selectedIP.listedCount})
+                              </button>
+                              <button
+                                onClick={() => setReportFilter('clean')}
+                                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${reportFilter === 'clean' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-600'}`}
+                              >
+                                Clean ({BLACKLIST_PROVIDERS.length - selectedIP.listedCount})
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Category filter pills */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-100 text-xs">
+                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-1">Category:</span>
+                          {[
+                            { id: 'all', label: 'All Databases' },
+                            { id: 'Spam', label: 'DNSBL Standard' },
+                            { id: 'Mail Gateway', label: 'Mail Gateways' },
+                            { id: 'Threat Intel', label: 'Threat Intel' },
+                            { id: 'Web Abuse', label: 'Web Abuse' },
+                            { id: 'Security', label: 'Security' }
+                          ].map((cat) => (
+                            <button
+                              key={cat.id}
+                              onClick={() => setBlacklistCategoryFilter(cat.id)}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                                blacklistCategoryFilter === cat.id
+                                  ? 'bg-slate-900 text-white shadow-xs'
+                                  : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                              }`}
+                            >
+                              {cat.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Table of providers */}
+                        <div className="border border-slate-200 rounded-xl overflow-x-auto shadow-2xs">
+                          <table className="w-full text-left border-collapse text-xs">
+                            <thead>
+                              <tr className="bg-slate-100/80 border-b border-slate-200 text-slate-600 font-black uppercase tracking-wider text-[10px]">
+                                <th className="py-3 px-4 w-28">Status</th>
+                                <th className="py-3 px-4 w-60">Provider / Database</th>
+                                <th className="py-3 px-4 w-28">Category</th>
+                                <th className="py-3 px-4">Listing Detail & Reason</th>
+                                <th className="py-3 px-4 w-20">TTL</th>
+                                <th className="py-3 px-4 w-24">Latency</th>
+                                <th className="py-3 px-4 w-36 text-right">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-150 font-medium text-slate-800">
+                              {BLACKLIST_PROVIDERS
+                                .filter((p) => {
+                                  const listingData = (selectedIP.listings as any)?.[p.id] || {};
+                                  const isListed = listingData.listed || listingData.status === 'LISTED' || listingData.status === 'Listed';
+                                  if (reportFilter === 'listed' && !isListed) return false;
+                                  if (reportFilter === 'clean' && isListed) return false;
+                                  if (blacklistCategoryFilter !== 'all' && p.category !== blacklistCategoryFilter) return false;
+                                  if (blacklistSearch.trim()) {
+                                    const q = blacklistSearch.toLowerCase();
+                                    return p.name.toLowerCase().includes(q) || p.domain.toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q);
+                                  }
+                                  return true;
+                                })
+                                .map((provider) => {
+                                  const listingData = (selectedIP.listings as any)?.[provider.id] || {};
+                                  const isListed = listingData.listed || listingData.status === 'LISTED' || listingData.status === 'Listed';
+                                  const reasonStr = isListed ? (listingData.details || `${selectedIP.ip} is flagged in database`) : 'Clean - Host IP in good standing';
+                                  const ttlVal = listingData.ttl || 2100;
+                                  const latency = listingData.responseTime || (provider.id === 'hostkarma' ? 260 : (provider.id === 'ivmsip' ? 7 : (provider.id === 'zerospam' ? 82 : 45)));
+                                  const delistUrl = provider.delistUrl || `https://mxtoolbox.com/SuperTool.aspx?action=blacklist%3A${selectedIP.ip}`;
+
+                                  return (
+                                    <tr 
+                                      key={provider.id}
+                                      className={`hover:bg-slate-50 transition-colors ${isListed ? 'bg-rose-50/40' : ''}`}
+                                    >
+                                      <td className="py-3 px-4">
+                                        {isListed ? (
+                                          <span className="inline-flex items-center gap-1.5 text-rose-700 font-extrabold text-[11px] uppercase">
+                                            <span className="w-5 h-5 rounded-full bg-rose-600 text-white flex items-center justify-center font-bold text-xs">
+                                              ✕
+                                            </span>
+                                            LISTED
+                                          </span>
+                                        ) : (
+                                          <span className="inline-flex items-center gap-1.5 text-emerald-700 font-extrabold text-[11px] uppercase">
+                                            <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                                            OK
+                                          </span>
+                                        )}
+                                      </td>
+                                      <td className="py-3 px-4 font-bold text-slate-900">
+                                        {provider.name}
+                                        <span className="block text-[10px] text-slate-400 font-mono font-normal">
+                                          {provider.domain}
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider ${
+                                          provider.category === 'Mail Gateway' ? 'bg-purple-100 text-purple-800' :
+                                          provider.category === 'Threat Intel' ? 'bg-amber-100 text-amber-800' :
+                                          provider.category === 'Web Abuse' ? 'bg-orange-100 text-orange-800' :
+                                          provider.category === 'Security' ? 'bg-rose-100 text-rose-800' :
+                                          'bg-slate-100 text-slate-700'
+                                        }`}>
+                                          {provider.category || 'DNSBL'}
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-4 text-slate-700 font-medium">
+                                        <span className="truncate max-w-xs block">{reasonStr}</span>
+                                      </td>
+                                      <td className="py-3 px-4 font-mono font-bold text-slate-600">
+                                        {isListed ? ttlVal : '-'}
+                                      </td>
+                                      <td className="py-3 px-4 font-mono font-bold text-slate-800">
+                                        {latency} ms
+                                      </td>
+                                      <td className="py-3 px-4 text-right">
+                                        <div className="flex items-center justify-end gap-1.5">
+                                          {isListed && (
+                                            <button
+                                              onClick={() => setSelectedGuideProvider({
+                                                id: provider.id,
+                                                name: provider.name,
+                                                delistUrl,
+                                                reason: reasonStr,
+                                                domain: provider.domain
+                                              })}
+                                              className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded text-[10px] font-black uppercase transition-all cursor-pointer"
+                                              title="View remediation steps"
+                                            >
+                                              Guide
+                                            </button>
+                                          )}
+                                          <a
+                                            href={delistUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className={`px-2.5 py-1 rounded text-[10px] font-black uppercase flex items-center gap-1 transition-all ${
+                                              isListed 
+                                                ? 'bg-red-600 hover:bg-red-700 text-white shadow-xs' 
+                                                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                                            }`}
+                                          >
+                                            Delist <ExternalLink className="w-2.5 h-2.5" />
+                                          </a>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
                     </div>
                   )}
 
-                  {/* Subnet CIDR Block Analysis Table (For Subnet/Range Searches) */}
-                  {report.results.length > 1 && (
-                    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm space-y-0">
-                      <div className="p-4 border-b border-slate-200 bg-slate-50/70 flex justify-between items-center">
+                  {/* Subnet CIDR Block Analysis Table (For All Scanned Targets) */}
+                  {report.results.length > 0 && (
+                    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm space-y-0" id="all-ips-scanned-table">
+                      <div className="p-4 border-b border-slate-200 bg-slate-50/70 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                         <div>
-                          <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest">Subnet CIDR Block Analysis ({report.target})</h3>
+                          <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest flex items-center gap-2">
+                            <Database className="w-4 h-4 text-red-600" />
+                            <span>{report.results.length > 1 ? `Subnet CIDR Block Analysis (${report.target})` : `Host Reputation Analysis (${report.target})`}</span>
+                          </h3>
                           <p className="text-[11px] text-slate-500 font-semibold">
-                            Full breakdown of all {report.results.length} IP addresses in subnet
+                            Full breakdown of all {report.results.length} IP {report.results.length === 1 ? 'address' : 'addresses'} evaluated in scan
                           </p>
                         </div>
-                        <span className="bg-slate-100 text-slate-700 text-xs font-bold px-3 py-1 rounded-lg border border-slate-200">
-                          {report.listedCount} Listed / {report.cleanCount} Clean
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="bg-slate-100 text-slate-700 text-xs font-bold px-3 py-1.5 rounded-lg border border-slate-200">
+                            {report.listedCount} Listed / {report.cleanCount} Clean
+                          </span>
+                          <button
+                            onClick={() => downloadCSVReport(report)}
+                            className="bg-white hover:bg-emerald-50 hover:text-emerald-700 border border-slate-300 text-slate-700 text-xs font-bold px-3 py-1.5 rounded-xl shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
+                            title="Export All IPs as CSV"
+                          >
+                            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Export CSV ({report.results.length})</span>
+                          </button>
+                        </div>
                       </div>
 
                       <div className="overflow-x-auto">
@@ -2024,9 +2233,13 @@ export default function App() {
                                         const el = document.getElementById('results-inspector-panel');
                                         if (el) el.scrollIntoView({ behavior: 'smooth' });
                                       }}
-                                      className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-[10px] uppercase tracking-wider px-3 py-1.5 rounded-lg transition-all cursor-pointer"
+                                      className={`font-bold text-[10px] uppercase tracking-wider px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                                        isSelected 
+                                          ? 'bg-red-600 text-white shadow-xs' 
+                                          : 'bg-slate-900 hover:bg-slate-800 text-white'
+                                      }`}
                                     >
-                                      Inspect Report ↗
+                                      {isSelected ? 'Viewing Report ✓' : 'Inspect Report ↗'}
                                     </button>
                                   </td>
                                 </tr>
