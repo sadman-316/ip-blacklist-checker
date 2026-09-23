@@ -5,7 +5,7 @@ import {
   RefreshCw, Sliders, Database, BookOpen, History, Plus, 
   AlertCircle, ArrowRight, MapPin, Info, X, CheckCircle, CheckCircle2,
   Clock, Edit3, ExternalLink, FileSpreadsheet, Cpu, Globe, Building, Check, FileText,
-  LogOut, Settings, Users, Bell, BellOff, Loader2, AlertTriangle, ChevronRight
+  LogOut, Settings, Users, Bell, BellOff, Loader2, AlertTriangle, ChevronRight, Mail, Send
 } from 'lucide-react';
 import { IPScanResult, SubnetScanReport, BlacklistProvider, SavedReport, UserProfile } from './types';
 import { downloadCSVReport, downloadJSONReport } from './utils';
@@ -20,6 +20,8 @@ import { AuthPage } from './components/AuthPage';
 import { IPMonitoring } from './components/IPMonitoring';
 import { UserManagement } from './components/UserManagement';
 import { SystemSettings } from './components/SystemSettings';
+import { DelistRequestModal } from './components/DelistRequestModal';
+import { DelistRequestsTracker } from './components/DelistRequestsTracker';
 import { COMPANY_CREDENTIALS } from './company-credentials';
 
 // Static Full Reputation & Blacklist Providers list for UI rendering & reference
@@ -745,7 +747,13 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
 
   // Input & scan states
-  const [target, setTarget] = useState('185.190.140.0/28'); // Preset to a high-quality example IP subnet range
+  const [target, setTarget] = useState<string>(() => {
+    try {
+      return localStorage.getItem('wolast_last_target') || '185.190.140.0/28';
+    } catch {
+      return '185.190.140.0/28';
+    }
+  });
   const [simulate, setSimulate] = useState(false); // Default to live RBL scan
   const [loading, setLoading] = useState(false);
   const [scanningProgress, setScanningProgress] = useState(0);
@@ -761,7 +769,15 @@ export default function App() {
   const [archiveConfirmDeleteId, setArchiveConfirmDeleteId] = useState<string | null>(null);
 
   // Navigation & Filtering
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'monitoring' | 'guides' | 'providers' | 'history' | 'users' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'monitoring' | 'guides' | 'providers' | 'history' | 'users' | 'settings'>(() => {
+    try {
+      const saved = localStorage.getItem('wolast_active_tab');
+      if (saved && ['dashboard', 'monitoring', 'guides', 'providers', 'history', 'users', 'settings'].includes(saved)) {
+        return saved as any;
+      }
+    } catch {}
+    return 'dashboard';
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'clean' | 'listed'>('all');
   const [filterAction, setFilterAction] = useState<string>('all');
@@ -775,7 +791,88 @@ export default function App() {
   const [reportFilter, setReportFilter] = useState<'all' | 'listed' | 'clean'>('all');
   const [blacklistSearch, setBlacklistSearch] = useState('');
   const [blacklistCategoryFilter, setBlacklistCategoryFilter] = useState<string>('all');
+  const [subnetFilter, setSubnetFilter] = useState<'all' | 'listed' | 'clean'>('all');
+  const [subnetSearch, setSubnetSearch] = useState('');
   const [selectedGuideProvider, setSelectedGuideProvider] = useState<{ id: string; name: string; delistUrl: string; reason?: string; domain?: string } | null>(null);
+  const [delistModalOpen, setDelistModalOpen] = useState(false);
+  const [delistModalTarget, setDelistModalTarget] = useState<{
+    ip: string;
+    ptr?: string;
+    isp?: string;
+    org?: string;
+    listedProviders: Array<{
+      id: string;
+      name: string;
+      domain: string;
+      delistUrl: string;
+      delistEmail?: string;
+      reason?: string;
+    }>;
+    initialProviderId?: string;
+  } | null>(null);
+
+  const openDelistAppealModal = (ipTarget: string, specificProviderId?: string) => {
+    const found = report?.results.find(r => r.ip === ipTarget);
+    const listed: Array<{
+      id: string;
+      name: string;
+      domain: string;
+      delistUrl: string;
+      delistEmail?: string;
+      reason?: string;
+    }> = [];
+
+    if (found) {
+      for (const p of BLACKLIST_PROVIDERS) {
+        const listing = (found.listings as any)?.[p.id];
+        if (listing?.listed || listing?.status === 'LISTED' || listing?.status === 'Listed') {
+          listed.push({
+            id: p.id,
+            name: p.name,
+            domain: p.domain,
+            delistUrl: p.delistUrl,
+            delistEmail: p.delistEmail,
+            reason: listing?.details
+          });
+        }
+      }
+    }
+
+    if (listed.length === 0 && specificProviderId) {
+      const p = BLACKLIST_PROVIDERS.find(bp => bp.id === specificProviderId);
+      if (p) {
+        listed.push({
+          id: p.id,
+          name: p.name,
+          domain: p.domain,
+          delistUrl: p.delistUrl,
+          delistEmail: p.delistEmail
+        });
+      }
+    }
+
+    if (listed.length === 0) {
+      for (const p of BLACKLIST_PROVIDERS) {
+        listed.push({
+          id: p.id,
+          name: p.name,
+          domain: p.domain,
+          delistUrl: p.delistUrl,
+          delistEmail: p.delistEmail
+        });
+      }
+    }
+
+    setDelistModalTarget({
+      ip: ipTarget || '',
+      ptr: found?.ptr,
+      isp: found?.location?.isp,
+      org: found?.location?.org,
+      listedProviders: listed,
+      initialProviderId: specificProviderId || (listed.length > 0 ? listed[0].id : 'spamhaus')
+    });
+    setDelistModalOpen(true);
+  };
 
   // Restore last active scan report if saved locally
   useEffect(() => {
@@ -786,10 +883,20 @@ export default function App() {
         if (parsed && parsed.results && parsed.results.length > 0) {
           setReport(parsed);
           setSelectedIP(parsed.results[0]);
+          if (parsed.target) {
+            setTarget(parsed.target);
+          }
         }
       }
     } catch (e) {}
   }, []);
+
+  // Save active tab in localStorage so browser refreshes never lose the current view
+  useEffect(() => {
+    try {
+      localStorage.setItem('wolast_active_tab', activeTab);
+    } catch (e) {}
+  }, [activeTab]);
 
   // Auto-sync selectedIP when report changes
   useEffect(() => {
@@ -1140,6 +1247,10 @@ export default function App() {
     if (!target.trim()) return;
 
     setActiveTab('dashboard');
+    try {
+      localStorage.setItem('wolast_last_target', target.trim());
+      localStorage.setItem('wolast_active_tab', 'dashboard');
+    } catch (e) {}
     setLoading(true);
     setScanningProgress(5);
     setScanLogs(['Initializing scanner module...', 'Analyzing target format...']);
@@ -1200,11 +1311,22 @@ export default function App() {
         setReport(scanResult);
         try {
           localStorage.setItem('wolast_current_report', JSON.stringify(scanResult));
+          localStorage.setItem('wolast_last_target', scanResult.target || target.trim());
+          localStorage.setItem('wolast_active_tab', 'dashboard');
         } catch (e) {}
         saveScanToHistory(scanResult);
         setActiveTab('dashboard');
         setLoading(false);
         triggerAlert('success', `Completed scanning ${scanResult.totalIPs} IPs. Found ${scanResult.listedCount} listed.`);
+
+        setTimeout(() => {
+          if (scanResult.results && scanResult.results.length > 1) {
+            const tableEl = document.getElementById('all-ips-scanned-table');
+            if (tableEl) {
+              tableEl.scrollIntoView({ behavior: 'smooth' });
+            }
+          }
+        }, 150);
       }, 500);
 
     } catch (err: any) {
@@ -1266,6 +1388,26 @@ export default function App() {
     const matchesAction = filterAction === 'all' || r.actionStatus === filterAction;
 
     return matchesSearch && matchesStatus && matchesAction;
+  }) : [];
+
+  // Subnet Block Table filter and search
+  const filteredSubnetResults = report ? report.results.filter(r => {
+    const matchesFilter = subnetFilter === 'all' 
+      ? true 
+      : subnetFilter === 'listed' 
+        ? r.listedCount > 0 
+        : r.listedCount === 0;
+    
+    if (!matchesFilter) return false;
+    
+    if (subnetSearch.trim()) {
+      const q = subnetSearch.toLowerCase();
+      const ptr = (r.ptr || r.location?.ptr || '').toLowerCase();
+      const isp = (r.isp || r.location?.isp || '').toLowerCase();
+      const country = (r.country || r.location?.country || '').toLowerCase();
+      return r.ip.includes(q) || ptr.includes(q) || isp.includes(q) || country.includes(q);
+    }
+    return true;
   }) : [];
 
   // Calculate stats based on active listings
@@ -1395,6 +1537,15 @@ export default function App() {
               }`}
             >
               IP Monitoring
+            </button>
+            <button 
+              onClick={() => setActiveTab('appeals')}
+              className={`pb-1 transition-all cursor-pointer flex items-center gap-1.5 border-b-2 ${
+                activeTab === 'appeals' ? 'text-red-500 border-red-500 font-extrabold' : 'border-transparent hover:text-white'
+              }`}
+            >
+              <Mail className="w-3.5 h-3.5" />
+              Delist Appeals
             </button>
             <button 
               onClick={() => setActiveTab('guides')}
@@ -1828,7 +1979,209 @@ export default function App() {
                   </section>
                 )}
 
-                {/* 2. Primary Scan results & Complete MXToolbox Blacklist Analysis Report */}
+                {/* 2. Subnet CIDR Block Analysis Table (For Multi-IP / Subnet scans - Displayed First) */}
+                {report.results.length > 1 && (
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm space-y-0" id="all-ips-scanned-table">
+                    <div className="p-4 border-b border-slate-200 bg-slate-50/70 flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="bg-red-600 text-white text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded">
+                            Network Scan Results
+                          </span>
+                          <span className="text-slate-400 text-xs font-semibold">
+                            Target Block: <strong className="text-slate-900 font-mono">{report.target}</strong>
+                          </span>
+                        </div>
+                        <h3 className="text-base font-black text-slate-900 mt-1 flex items-center gap-2">
+                          <Database className="w-4 h-4 text-red-600" />
+                          <span>Complete Network Subnet Report ({report.results.length} IPs)</span>
+                        </h3>
+                        <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                          Showing status for all IP addresses in this subnet. Click &quot;Inspect Diagnostics&quot; on any IP to view individual blacklist details below.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        {/* Subnet status filter tabs */}
+                        <div className="flex items-center bg-slate-200/70 p-1 rounded-xl gap-1">
+                          <button
+                            onClick={() => setSubnetFilter('all')}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              subnetFilter === 'all'
+                                ? 'bg-white text-slate-900 shadow-xs'
+                                : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                          >
+                            All ({report.results.length})
+                          </button>
+                          <button
+                            onClick={() => setSubnetFilter('listed')}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              subnetFilter === 'listed'
+                                ? 'bg-rose-600 text-white shadow-xs'
+                                : 'text-rose-700 hover:bg-rose-50'
+                            }`}
+                          >
+                            Listed ({report.listedCount})
+                          </button>
+                          <button
+                            onClick={() => setSubnetFilter('clean')}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              subnetFilter === 'clean'
+                                ? 'bg-emerald-600 text-white shadow-xs'
+                                : 'text-emerald-700 hover:bg-emerald-50'
+                            }`}
+                          >
+                            Clean ({report.cleanCount})
+                          </button>
+                        </div>
+
+                        <button
+                          onClick={() => downloadCSVReport(report)}
+                          className="bg-white hover:bg-emerald-50 hover:text-emerald-700 border border-slate-300 text-slate-700 text-xs font-bold px-3 py-1.5 rounded-xl shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
+                          title="Export All IPs as CSV"
+                        >
+                          <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Export CSV</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Quick Search in Subnet Results */}
+                    <div className="p-3 bg-white border-b border-slate-200 flex items-center gap-3">
+                      <div className="relative flex-1">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={subnetSearch}
+                          onChange={(e) => setSubnetSearch(e.target.value)}
+                          placeholder="Quick search IP address, PTR hostname, or ISP in this subnet..."
+                          className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-red-500/20 focus:border-red-500 text-slate-900 font-medium"
+                        />
+                      </div>
+                      {subnetSearch && (
+                        <button
+                          onClick={() => setSubnetSearch('')}
+                          className="text-xs text-slate-500 hover:text-slate-800 font-bold px-2 py-1 cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      )}
+                      <span className="text-[11px] text-slate-500 font-semibold whitespace-nowrap">
+                        Showing {filteredSubnetResults.length} of {report.results.length} IPs
+                      </span>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr className="bg-slate-100/70 border-b border-slate-200 text-slate-600 font-black uppercase tracking-wider text-[10px]">
+                            <th className="py-3 px-4">IP Address</th>
+                            <th className="py-3 px-4">Reverse DNS (PTR)</th>
+                            <th className="py-3 px-4">ISP / Organization</th>
+                            <th className="py-3 px-4">Country</th>
+                            <th className="py-3 px-4">Status</th>
+                            <th className="py-3 px-4">Flagged Blacklists</th>
+                            <th className="py-3 px-4 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-150 font-medium text-slate-800">
+                          {filteredSubnetResults.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="py-8 text-center text-slate-400 font-semibold">
+                                No IPs match your current filter or search criteria.
+                              </td>
+                            </tr>
+                          ) : (
+                            filteredSubnetResults.map((r) => {
+                              const isSelected = selectedIP?.ip === r.ip;
+                              const flaggedList = Object.entries(r.listings)
+                                .filter(([_, data]) => (data as any).listed)
+                                .map(([id]) => {
+                                  const p = BLACKLIST_PROVIDERS.find(bp => bp.id === id);
+                                  return p ? p.name : id.toUpperCase();
+                                });
+
+                              return (
+                                <tr 
+                                  key={r.ip}
+                                  className={`hover:bg-slate-50 transition-colors ${isSelected ? 'bg-red-500/5 font-bold' : ''}`}
+                                >
+                                  <td className="py-3.5 px-4 font-mono font-bold text-slate-900">
+                                    <div className="flex items-center gap-1.5">
+                                      {isSelected && <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />}
+                                      <span>{r.ip}</span>
+                                    </div>
+                                  </td>
+                                  <td className="py-3.5 px-4 font-mono text-slate-600 text-xs">
+                                    {r.ptr || r.location?.ptr || 'No PTR Record'}
+                                  </td>
+                                  <td className="py-3.5 px-4 text-slate-700 font-medium">
+                                    {r.isp || r.location?.isp || 'Unknown ISP'}
+                                  </td>
+                                  <td className="py-3.5 px-4 text-slate-700">
+                                    {r.country || (r.location?.countryCode ? `${r.location.city}, ${r.location.countryCode}` : 'N/A')}
+                                  </td>
+                                  <td className="py-3.5 px-4">
+                                    {r.status === 'clean' ? (
+                                      <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2 py-0.5 rounded border border-emerald-200 uppercase">
+                                        Clean
+                                      </span>
+                                    ) : (
+                                      <span className="bg-rose-100 text-rose-800 text-[10px] font-extrabold px-2 py-0.5 rounded border border-rose-200 uppercase">
+                                        Listed ({r.listedCount})
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-3.5 px-4 font-mono text-xs">
+                                    {flaggedList.length > 0 ? (
+                                      <span className="text-red-600 font-bold">{flaggedList.join(', ')}</span>
+                                    ) : (
+                                      <span className="text-slate-400">-</span>
+                                    )}
+                                  </td>
+                                  <td className="py-3.5 px-4 text-right">
+                                    <div className="flex items-center justify-end gap-1.5">
+                                      {r.listedCount > 0 && (
+                                        <button
+                                          onClick={() => {
+                                            handleSelectIP(r);
+                                            openDelistAppealModal(r.ip);
+                                          }}
+                                          className="px-2.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center gap-1 cursor-pointer shadow-xs transition-all"
+                                          title={`Draft removal appeal for ${r.ip}`}
+                                        >
+                                          <Mail className="w-3 h-3" />
+                                          Appeal
+                                        </button>
+                                      )}
+                                      <button
+                                        onClick={() => {
+                                          handleSelectIP(r);
+                                          const el = document.getElementById('results-inspector-panel');
+                                          if (el) el.scrollIntoView({ behavior: 'smooth' });
+                                        }}
+                                        className={`font-bold text-[10px] uppercase tracking-wider px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+                                          isSelected 
+                                            ? 'bg-red-600 text-white shadow-xs' 
+                                            : 'bg-slate-900 hover:bg-slate-800 text-white'
+                                        }`}
+                                      >
+                                        <span>{isSelected ? 'Viewing Diagnostics ↓' : 'Inspect Diagnostics ↓'}</span>
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* 3. Primary Scan results & Comprehensive DNSBL Analysis Report */}
                 <div className="space-y-6" id="results-inspector-panel">
                   
                   {/* Complete IP Blacklist Analysis Report Header & Selector */}
@@ -1839,7 +2192,7 @@ export default function App() {
                         <div>
                           <div className="flex items-center gap-2">
                             <span className="bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md">
-                              MXToolbox IP Blacklist Analysis Report
+                              DNSBL Comprehensive IP Audit Report
                             </span>
                             <span className="text-slate-400 text-xs font-semibold">
                               Target: <strong className="text-slate-900 font-mono">{report.target}</strong>
@@ -1852,22 +2205,33 @@ export default function App() {
 
                         {/* Subnet / IP Selector Dropdown */}
                         {report.results.length > 1 && (
-                          <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200">
-                            <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Inspect IP in Block:</label>
-                            <select
-                              value={selectedIP.ip}
-                              onChange={(e) => {
-                                const found = report.results.find(r => r.ip === e.target.value);
-                                if (found) handleSelectIP(found);
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              onClick={() => {
+                                const el = document.getElementById('all-ips-scanned-table');
+                                if (el) el.scrollIntoView({ behavior: 'smooth' });
                               }}
-                              className="bg-white border border-slate-300 text-xs font-mono font-bold px-3 py-1.5 rounded-lg text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-red-500 cursor-pointer"
+                              className="bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold px-3 py-1.5 rounded-lg border border-slate-300 flex items-center gap-1 cursor-pointer"
                             >
-                              {report.results.map(r => (
-                                <option key={r.ip} value={r.ip}>
-                                  {r.ip} {r.listedCount > 0 ? `(LISTED: ${r.listedCount})` : '(CLEAN)'}
-                                </option>
-                              ))}
-                            </select>
+                              ↑ Back to Subnet List ({report.results.length} IPs)
+                            </button>
+                            <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
+                              <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">Switch Node:</label>
+                              <select
+                                value={selectedIP.ip}
+                                onChange={(e) => {
+                                  const found = report.results.find(r => r.ip === e.target.value);
+                                  if (found) handleSelectIP(found);
+                                }}
+                                className="bg-white border border-slate-300 text-xs font-mono font-bold px-2 py-1 rounded-md text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-red-500 cursor-pointer"
+                              >
+                                {report.results.map(r => (
+                                  <option key={r.ip} value={r.ip}>
+                                    {r.ip} {r.listedCount > 0 ? `(LISTED: ${r.listedCount})` : '(CLEAN)'}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -1925,11 +2289,21 @@ export default function App() {
                               Checked across <strong>{BLACKLIST_PROVIDERS.length}</strong> DNSBL provider databases
                             </span>
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             {selectedIP.listedCount > 0 ? (
-                              <span className="bg-rose-600 text-white font-extrabold text-xs px-3 py-1.5 rounded-lg tracking-wide uppercase shadow-sm">
-                                LISTED ON {selectedIP.listedCount} BLACKLISTS
-                              </span>
+                              <>
+                                <span className="bg-rose-600 text-white font-extrabold text-xs px-3 py-1.5 rounded-lg tracking-wide uppercase shadow-sm">
+                                  LISTED ON {selectedIP.listedCount} BLACKLISTS
+                                </span>
+                                <button
+                                  onClick={() => openDelistAppealModal(selectedIP.ip)}
+                                  className="bg-red-600 hover:bg-red-700 text-white font-black text-xs px-3.5 py-1.5 rounded-lg shadow-sm transition-all flex items-center gap-1.5 cursor-pointer animate-pulse"
+                                  title="Submit formal removal appeal to listed databases"
+                                >
+                                  <Mail className="w-3.5 h-3.5" />
+                                  Request Removal Appeal ({selectedIP.listedCount})
+                                </button>
+                              </>
                             ) : (
                               <span className="bg-emerald-600 text-white font-extrabold text-xs px-3 py-1.5 rounded-lg tracking-wide uppercase shadow-sm">
                                 CLEAN / NOT LISTED
@@ -2062,7 +2436,7 @@ export default function App() {
                                   const reasonStr = isListed ? (listingData.details || `${selectedIP.ip} is flagged in database`) : 'Clean - Host IP in good standing';
                                   const ttlVal = listingData.ttl || 2100;
                                   const latency = listingData.responseTime || (provider.id === 'hostkarma' ? 260 : (provider.id === 'ivmsip' ? 7 : (provider.id === 'zerospam' ? 82 : 45)));
-                                  const delistUrl = provider.delistUrl || `https://mxtoolbox.com/SuperTool.aspx?action=blacklist%3A${selectedIP.ip}`;
+                                  const delistUrl = provider.delistUrl || (provider.domain ? `https://${provider.domain}` : 'https://www.spamhaus.org/lookup/');
 
                                   return (
                                     <tr 
@@ -2113,19 +2487,29 @@ export default function App() {
                                       <td className="py-3 px-4 text-right">
                                         <div className="flex items-center justify-end gap-1.5">
                                           {isListed && (
-                                            <button
-                                              onClick={() => setSelectedGuideProvider({
-                                                id: provider.id,
-                                                name: provider.name,
-                                                delistUrl,
-                                                reason: reasonStr,
-                                                domain: provider.domain
-                                              })}
-                                              className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded text-[10px] font-black uppercase transition-all cursor-pointer"
-                                              title="View remediation steps"
-                                            >
-                                              Guide
-                                            </button>
+                                            <>
+                                              <button
+                                                onClick={() => openDelistAppealModal(selectedIP.ip, provider.id)}
+                                                className="px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-[10px] font-black uppercase transition-all flex items-center gap-1 cursor-pointer shadow-xs"
+                                                title="Send removal appeal email or open submission form"
+                                              >
+                                                <Mail className="w-2.5 h-2.5" />
+                                                Appeal
+                                              </button>
+                                              <button
+                                                onClick={() => setSelectedGuideProvider({
+                                                  id: provider.id,
+                                                  name: provider.name,
+                                                  delistUrl,
+                                                  reason: reasonStr,
+                                                  domain: provider.domain
+                                                })}
+                                                className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded text-[10px] font-black uppercase transition-all cursor-pointer"
+                                                title="View remediation steps"
+                                              >
+                                                Guide
+                                              </button>
+                                            </>
                                           )}
                                           <a
                                             href={delistUrl}
@@ -2133,11 +2517,11 @@ export default function App() {
                                             rel="noopener noreferrer"
                                             className={`px-2.5 py-1 rounded text-[10px] font-black uppercase flex items-center gap-1 transition-all ${
                                               isListed 
-                                                ? 'bg-red-600 hover:bg-red-700 text-white shadow-xs' 
+                                                ? 'bg-slate-900 hover:bg-slate-800 text-white shadow-xs' 
                                                 : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                                             }`}
                                           >
-                                            Delist <ExternalLink className="w-2.5 h-2.5" />
+                                            Portal <ExternalLink className="w-2.5 h-2.5" />
                                           </a>
                                         </div>
                                       </td>
@@ -2149,105 +2533,6 @@ export default function App() {
                         </div>
                       </div>
 
-                    </div>
-                  )}
-
-                  {/* Subnet CIDR Block Analysis Table (For All Scanned Targets) */}
-                  {report.results.length > 0 && (
-                    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm space-y-0" id="all-ips-scanned-table">
-                      <div className="p-4 border-b border-slate-200 bg-slate-50/70 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                        <div>
-                          <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest flex items-center gap-2">
-                            <Database className="w-4 h-4 text-red-600" />
-                            <span>{report.results.length > 1 ? `Subnet CIDR Block Analysis (${report.target})` : `Host Reputation Analysis (${report.target})`}</span>
-                          </h3>
-                          <p className="text-[11px] text-slate-500 font-semibold">
-                            Full breakdown of all {report.results.length} IP {report.results.length === 1 ? 'address' : 'addresses'} evaluated in scan
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="bg-slate-100 text-slate-700 text-xs font-bold px-3 py-1.5 rounded-lg border border-slate-200">
-                            {report.listedCount} Listed / {report.cleanCount} Clean
-                          </span>
-                          <button
-                            onClick={() => downloadCSVReport(report)}
-                            className="bg-white hover:bg-emerald-50 hover:text-emerald-700 border border-slate-300 text-slate-700 text-xs font-bold px-3 py-1.5 rounded-xl shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
-                            title="Export All IPs as CSV"
-                          >
-                            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                            <span>Export CSV ({report.results.length})</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left border-collapse text-xs">
-                          <thead>
-                            <tr className="bg-slate-100/70 border-b border-slate-200 text-slate-600 font-black uppercase tracking-wider text-[10px]">
-                              <th className="py-3 px-4">IP Address</th>
-                              <th className="py-3 px-4">Reverse DNS (PTR)</th>
-                              <th className="py-3 px-4">ISP / Organization</th>
-                              <th className="py-3 px-4">Country</th>
-                              <th className="py-3 px-4">Status</th>
-                              <th className="py-3 px-4">Flagged Blacklists</th>
-                              <th className="py-3 px-4 text-right">Action</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-150 font-medium text-slate-800">
-                            {report.results.map((r) => {
-                              const isSelected = selectedIP?.ip === r.ip;
-                              const flaggedList = Object.entries(r.listings)
-                                .filter(([_, data]) => (data as any).listed)
-                                .map(([id]) => {
-                                  const p = BLACKLIST_PROVIDERS.find(bp => bp.id === id);
-                                  return p ? p.name : id.toUpperCase();
-                                });
-
-                              return (
-                                <tr 
-                                  key={r.ip}
-                                  className={`hover:bg-slate-50 transition-colors ${isSelected ? 'bg-red-500/5 font-bold' : ''}`}
-                                >
-                                  <td className="py-3.5 px-4 font-mono font-bold text-slate-900">{r.ip}</td>
-                                  <td className="py-3.5 px-4 font-mono text-slate-600 text-xs">{r.ptr || r.location?.ptr || 'No PTR Record'}</td>
-                                  <td className="py-3.5 px-4 text-slate-700 font-medium">{r.isp || r.location?.isp || 'Unknown ISP'}</td>
-                                  <td className="py-3.5 px-4 text-slate-700">{r.country || (r.location?.countryCode ? `${r.location.city}, ${r.location.countryCode}` : 'N/A')}</td>
-                                  <td className="py-3.5 px-4">
-                                    {r.status === 'clean' ? (
-                                      <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2 py-0.5 rounded border border-emerald-200 uppercase">Clean</span>
-                                    ) : (
-                                      <span className="bg-rose-100 text-rose-800 text-[10px] font-extrabold px-2 py-0.5 rounded border border-rose-200 uppercase">Listed ({r.listedCount})</span>
-                                    )}
-                                  </td>
-                                  <td className="py-3.5 px-4 font-mono text-xs">
-                                    {flaggedList.length > 0 ? (
-                                      <span className="text-red-600 font-bold">{flaggedList.join(', ')}</span>
-                                    ) : (
-                                      <span className="text-slate-400">-</span>
-                                    )}
-                                  </td>
-                                  <td className="py-3.5 px-4 text-right">
-                                    <button
-                                      onClick={() => {
-                                        handleSelectIP(r);
-                                        const el = document.getElementById('results-inspector-panel');
-                                        if (el) el.scrollIntoView({ behavior: 'smooth' });
-                                      }}
-                                      className={`font-bold text-[10px] uppercase tracking-wider px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
-                                        isSelected 
-                                          ? 'bg-red-600 text-white shadow-xs' 
-                                          : 'bg-slate-900 hover:bg-slate-800 text-white'
-                                      }`}
-                                    >
-                                      {isSelected ? 'Viewing Report ✓' : 'Inspect Report ↗'}
-                                    </button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
                     </div>
                   )}
 
@@ -2329,7 +2614,13 @@ export default function App() {
 
         {/* TAB 1.5: IP MONITORING SECTION (NEW) */}
         {activeTab === 'monitoring' && (
-          <IPMonitoring currentUser={userProfile} triggerAlert={triggerAlert} />
+          <IPMonitoring 
+            currentUser={userProfile} 
+            triggerAlert={triggerAlert} 
+            onOpenDelistAppeal={(targetIP?: string, providerId?: string) => {
+              openDelistAppealModal(targetIP || '', providerId);
+            }} 
+          />
         )}
 
         {/* TAB 2: THREAT MITIGATION DELISTING HUBS */}
@@ -2342,6 +2633,22 @@ export default function App() {
               </div>
 
               <div className="space-y-6">
+
+                {/* Instant Delist Launch Banner */}
+                <div className="bg-gradient-to-r from-red-950 via-slate-900 to-slate-900 border border-red-500/30 p-4.5 rounded-xl text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                  <div>
+                    <span className="text-[10px] font-black uppercase tracking-wider text-red-400 block">Instant Appeal Generator</span>
+                    <h3 className="text-sm font-black text-white mt-0.5">Need to Delist an IP Address Now?</h3>
+                    <p className="text-[11px] text-slate-300">Open our automated NOC Appeal Engine to draft, format, and dispatch an official removal letter for any IP.</p>
+                  </div>
+                  <button
+                    onClick={() => openDelistAppealModal(selectedIP?.ip || '')}
+                    className="px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white font-black text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shrink-0 shadow-xs"
+                  >
+                    <Mail className="w-3.5 h-3.5" />
+                    <span>Open Delist Appeal Engine</span>
+                  </button>
+                </div>
                 
                 {/* General delisting instructions */}
                 <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100/60 flex items-start gap-3 text-xs leading-relaxed font-semibold text-slate-800">
@@ -2536,6 +2843,17 @@ export default function App() {
           </div>
         )}
 
+        {/* TAB: DELISTING APPEALS & REMOVAL TRACKER */}
+        {activeTab === 'appeals' && (
+          <DelistRequestsTracker
+            currentUser={userProfile}
+            triggerAlert={triggerAlert}
+            onOpenNewAppealModal={(targetIP?: string) => {
+              openDelistAppealModal(targetIP || selectedIP?.ip || '');
+            }}
+          />
+        )}
+
         {/* TAB 5: ADMIN - USER ACCOUNTS MANAGEMENT (NEW) */}
         {activeTab === 'users' && isAdmin && (
           <UserManagement currentUser={userProfile} triggerAlert={triggerAlert} />
@@ -2631,6 +2949,28 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Delisting Request & Appeal Modal */}
+      {delistModalOpen && delistModalTarget && (
+        <DelistRequestModal
+          isOpen={delistModalOpen}
+          onClose={() => {
+            setDelistModalOpen(false);
+            setDelistModalTarget(null);
+          }}
+          targetIP={delistModalTarget.ip}
+          ptr={delistModalTarget.ptr}
+          isp={delistModalTarget.isp}
+          org={delistModalTarget.org}
+          listedProviders={delistModalTarget.listedProviders}
+          initialProviderId={delistModalTarget.initialProviderId}
+          currentUser={userProfile}
+          triggerAlert={triggerAlert}
+          onSuccess={() => {
+            triggerAlert('success', 'Delisting appeal successfully dispatched.');
+          }}
+        />
       )}
 
     </div>
