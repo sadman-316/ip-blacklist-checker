@@ -3,6 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import dns from "dns";
 import fs from "fs";
+import nodemailer from "nodemailer";
 import { initializeApp, getApp, getApps } from "firebase/app";
 import { getFirestore, collection, getDocs, updateDoc, doc, addDoc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
 
@@ -1637,7 +1638,7 @@ function generateSimulatedScan(ips: string[]): any[] {
       }
 
       const reasonStr = isListed ? (txt ? `${details} | TXT: ${txt}` : details) : `OK - Not listed in ${provider.domain}`;
-      const refUrl = provider.delistUrl || `https://mxtoolbox.com/SuperTool.aspx?action=blacklist%3A${ip}`;
+      const refUrl = provider.delistUrl || (provider.domain ? `https://${provider.domain}` : 'https://www.spamhaus.org/lookup/');
       const actionStr = getRecommendedAction(provider.id, provider.name, isListed, txt || details);
 
       listings[provider.id] = {
@@ -1947,7 +1948,7 @@ app.post("/api/scan", async (req, res) => {
               const reasonStr = isListed
                 ? (check.txt ? `${check.details} | TXT: ${check.txt}` : check.details)
                 : `Clean - Not listed in ${providerDomain}`;
-              const refUrl = provider?.delistUrl || `https://mxtoolbox.com/SuperTool.aspx?action=blacklist%3A${ip}`;
+              const refUrl = provider?.delistUrl || (providerDomain ? `https://${providerDomain}` : 'https://www.spamhaus.org/lookup/');
               const actionStr = getRecommendedAction(check.id, providerName, isListed, check.txt || check.details);
 
               listings[check.id] = {
@@ -2020,8 +2021,39 @@ app.get("/api/providers", (req, res) => {
   res.json({ providers: BLACKLIST_PROVIDERS });
 });
 
-// Persistent User Accounts Store
-const USERS_FILE_PATH = path.join(process.cwd(), "users_store.json");
+// Persistent Data Directory (Isolated inside data/ so file watchers like Vite and nodemon never trigger reloads)
+const DATA_DIR = path.join(process.cwd(), "data");
+if (!fs.existsSync(DATA_DIR)) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  } catch (e) {
+    console.error("Failed to create data directory:", e);
+  }
+}
+
+// Helper to auto-migrate existing files from root to data directory if present
+function resolveStorePath(fileName: string): string {
+  const targetPath = path.join(DATA_DIR, fileName);
+  const legacyPath = path.join(process.cwd(), fileName);
+  try {
+    if (fs.existsSync(legacyPath) && !fs.existsSync(targetPath)) {
+      fs.copyFileSync(legacyPath, targetPath);
+      console.log(`[WolastStore] Migrated ${fileName} from root to data/`);
+    }
+    if (fs.existsSync(legacyPath)) {
+      try { fs.unlinkSync(legacyPath); } catch (_) {}
+    }
+    const legacyBak = `${legacyPath}.bak`;
+    if (fs.existsSync(legacyBak)) {
+      try { fs.unlinkSync(legacyBak); } catch (_) {}
+    }
+  } catch (err) {
+    console.warn(`[WolastStore] Migration note for ${fileName}:`, err);
+  }
+  return targetPath;
+}
+
+const USERS_FILE_PATH = resolveStorePath("users_store.json");
 
 const DEFAULT_USERS = [
   {
@@ -2090,9 +2122,13 @@ function safeReadJsonFile<T>(filePath: string, fallback: T): T {
 }
 
 function safeWriteJsonFile<T>(filePath: string, data: T): void {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  }
   const tmpPath = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).substring(2, 6)}`;
   try {
-    const jsonStr = JSON.stringify(data, null, 2);
+    const jsonStr = JSON.stringify(data);
     fs.writeFileSync(tmpPath, jsonStr, "utf-8");
     if (fs.existsSync(filePath)) {
       try {
@@ -2279,14 +2315,16 @@ app.post("/api/auth/login", (req, res) => {
 });
 
 // Persistent Scans Store
-const SCANS_FILE_PATH = path.join(process.cwd(), "scans_store.json");
+const SCANS_FILE_PATH = resolveStorePath("scans_store.json");
 
 function loadServerScans(): any[] {
   return safeReadJsonFile<any[]>(SCANS_FILE_PATH, []);
 }
 
 function saveServerScans(scans: any[]) {
-  safeWriteJsonFile(SCANS_FILE_PATH, scans);
+  // Cap at 40 historical scans to prevent giant file sizes and heavy disk I/O
+  const trimmed = Array.isArray(scans) ? scans.slice(0, 40) : [];
+  safeWriteJsonFile(SCANS_FILE_PATH, trimmed);
 }
 
 app.get("/api/scans", (req, res) => {
@@ -2309,8 +2347,10 @@ app.post("/api/scans", (req, res) => {
       timestamp: scanData.timestamp || new Date().toISOString()
     };
 
-    scans.unshift(newScan);
-    saveServerScans(scans);
+    // Remove if already exists with same id, then unshift
+    const filtered = scans.filter((s: any) => s.id !== newScan.id);
+    filtered.unshift(newScan);
+    saveServerScans(filtered);
 
     res.json({ success: true, scan: newScan });
   } catch (err: any) {
@@ -2331,7 +2371,7 @@ app.delete("/api/scans/:id", (req, res) => {
 });
 
 // Persistent Monitored IPs Store
-const MONITORED_IPS_FILE_PATH = path.join(process.cwd(), "monitored_ips_store.json");
+const MONITORED_IPS_FILE_PATH = resolveStorePath("monitored_ips_store.json");
 
 function loadServerMonitoredIPs(): any[] {
   return safeReadJsonFile<any[]>(MONITORED_IPS_FILE_PATH, []);
@@ -2419,7 +2459,7 @@ app.post("/api/monitored-ips/rescan-all", async (req, res) => {
 });
 
 // API: Get Daily Blacklist Reports
-const DAILY_REPORTS_FILE_PATH = path.join(process.cwd(), "daily_reports_store.json");
+const DAILY_REPORTS_FILE_PATH = resolveStorePath("daily_reports_store.json");
 
 function loadServerDailyReports(): any[] {
   return safeReadJsonFile<any[]>(DAILY_REPORTS_FILE_PATH, []);
@@ -2434,7 +2474,8 @@ function saveServerDailyReport(report: any) {
     } else {
       reports.unshift(report);
     }
-    safeWriteJsonFile(DAILY_REPORTS_FILE_PATH, reports);
+    // Cap at 30 days of daily reports to prevent file bloat
+    safeWriteJsonFile(DAILY_REPORTS_FILE_PATH, reports.slice(0, 30));
   } catch (err: any) {
     console.error("Error writing daily_reports_store.json:", err);
   }
@@ -2485,6 +2526,345 @@ app.post("/api/reports/daily/generate", async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: `Failed to compile daily report: ${err.message}` });
   }
+});
+
+// ==========================================
+// Delist Removal Request Storage & API Endpoints
+// ==========================================
+const DELIST_REQUESTS_FILE_PATH = resolveStorePath("server-delist-requests.json");
+const SMTP_SETTINGS_FILE_PATH = resolveStorePath("server-smtp-settings.json");
+
+function loadDelistRequests(): any[] {
+  return safeReadJsonFile<any[]>(DELIST_REQUESTS_FILE_PATH, []);
+}
+
+function saveDelistRequests(requests: any[]) {
+  safeWriteJsonFile(DELIST_REQUESTS_FILE_PATH, requests);
+}
+
+function loadSmtpSettings(): any {
+  return safeReadJsonFile<any>(SMTP_SETTINGS_FILE_PATH, {
+    host: process.env.SMTP_HOST || "",
+    port: parseInt(process.env.SMTP_PORT || "587", 10),
+    secure: process.env.SMTP_SECURE === "true",
+    user: process.env.SMTP_USER || "",
+    pass: process.env.SMTP_PASS || "",
+    fromName: process.env.SMTP_FROM_NAME || "Wolast Security NOC",
+    fromEmail: process.env.SMTP_FROM_EMAIL || "abuse@wolast.com",
+    companyName: process.env.SMTP_COMPANY_NAME || "Wolast Technology Ltd."
+  });
+}
+
+function saveSmtpSettings(settings: any) {
+  safeWriteJsonFile(SMTP_SETTINGS_FILE_PATH, settings);
+}
+
+// Get all delist requests
+app.get("/api/delist/requests", (req, res) => {
+  try {
+    const requests = loadDelistRequests();
+    requests.sort((a: any, b: any) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+    res.json({ requests });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to load delist requests: ${err.message}` });
+  }
+});
+
+// Create new delist request record
+app.post("/api/delist/requests", (req, res) => {
+  try {
+    const body = req.body;
+    const requests = loadDelistRequests();
+    const newRequest = {
+      id: body.id || `delist_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      ip: body.ip,
+      providerId: body.providerId,
+      providerName: body.providerName,
+      recipientEmail: body.recipientEmail,
+      delistUrl: body.delistUrl,
+      companyName: body.companyName,
+      senderName: body.senderName,
+      senderEmail: body.senderEmail,
+      reasonCategory: body.reasonCategory,
+      subject: body.subject,
+      message: body.message,
+      status: body.status || 'pending',
+      submittedAt: body.submittedAt || new Date().toISOString(),
+      sendMethod: body.sendMethod || 'smtp'
+    };
+
+    requests.unshift(newRequest);
+    saveDelistRequests(requests);
+    res.json({ success: true, request: newRequest });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to save delist request: ${err.message}` });
+  }
+});
+
+// Update status of a delist request
+app.put("/api/delist/requests/:id", (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, notes } = req.body;
+    const requests = loadDelistRequests();
+    const index = requests.findIndex((r: any) => r.id === id);
+
+    if (index === -1) {
+      return res.status(404).json({ error: "Delist request not found" });
+    }
+
+    if (status) requests[index].status = status;
+    if (notes !== undefined) requests[index].notes = notes;
+    requests[index].lastCheckedAt = new Date().toISOString();
+
+    saveDelistRequests(requests);
+    res.json({ success: true, request: requests[index] });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to update request: ${err.message}` });
+  }
+});
+
+// Delete delist request
+app.delete("/api/delist/requests/:id", (req, res) => {
+  try {
+    const { id } = req.params;
+    let requests = loadDelistRequests();
+    requests = requests.filter((r: any) => r.id !== id);
+    saveDelistRequests(requests);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to delete delist request: ${err.message}` });
+  }
+});
+
+// Send Delist Email via SMTP
+app.post("/api/delist/send-email", async (req, res) => {
+  try {
+    const {
+      ip,
+      providerId,
+      providerName,
+      recipientEmail,
+      delistUrl,
+      companyName,
+      senderName,
+      senderEmail,
+      reasonCategory,
+      subject,
+      message
+    } = req.body;
+
+    if (!recipientEmail) {
+      return res.status(400).json({ error: "Recipient email address is required." });
+    }
+
+    const smtp = loadSmtpSettings();
+
+    // Check if SMTP is configured
+    if (!smtp.host || !smtp.user) {
+      return res.status(400).json({
+        success: false,
+        code: "SMTP_NOT_CONFIGURED",
+        message: "Server SMTP is not configured yet. Please configure your SMTP server credentials in System Settings, or use the 1-Click Send via Email Client option."
+      });
+    }
+
+    // Create Nodemailer Transporter
+    const transporter = nodemailer.createTransport({
+      host: smtp.host,
+      port: smtp.port || 587,
+      secure: Boolean(smtp.secure),
+      auth: {
+        user: smtp.user,
+        pass: smtp.pass
+      },
+      tls: {
+        rejectUnauthorized: false
+      }
+    });
+
+    const fromAddress = smtp.fromEmail || senderEmail;
+    const fromDisplayName = `${senderName} via ${companyName || smtp.companyName}`;
+
+    const mailOptions = {
+      from: `"${fromDisplayName}" <${fromAddress}>`,
+      replyTo: senderEmail,
+      to: recipientEmail,
+      cc: senderEmail, // so user gets confirmation in their inbox
+      subject: subject || `[Delisting Appeal] IP ${ip} - ${companyName}`,
+      text: message,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 680px; margin: 0 auto; color: #1e293b; line-height: 1.6;">
+          <div style="background-color: #0f172a; color: #ffffff; padding: 18px 24px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0; font-size: 16px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase;">
+              Formal Blacklist Removal &amp; Remediation Appeal
+            </h2>
+            <p style="margin: 4px 0 0 0; font-size: 12px; color: #94a3b8;">
+              Database: ${providerName} | Target IP: <code style="color: #f87171; font-weight: bold;">${ip}</code>
+            </p>
+          </div>
+          <div style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: none; padding: 24px; border-radius: 0 0 8px 8px;">
+            <div style="background-color: #f8fafc; border-left: 4px solid #dc2626; padding: 12px 16px; margin-bottom: 20px; font-size: 12px;">
+              <strong>Sender:</strong> ${senderName} (${senderEmail})<br/>
+              <strong>Organization:</strong> ${companyName}<br/>
+              <strong>Remediation Classification:</strong> ${reasonCategory || 'Security Investigation & Resolution'}
+            </div>
+            <div style="font-size: 13px; color: #334155; white-space: pre-wrap; font-family: monospace;">${message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+            <hr style="margin: 24px 0; border: none; border-top: 1px solid #e2e8f0;"/>
+            <p style="font-size: 11px; color: #64748b; margin: 0;">
+              Dispatched via WolastShield IP Reputation &amp; Monitoring Engine.<br/>
+              To confirm receipt or request further diagnostic telemetry, reply directly to: <a href="mailto:${senderEmail}" style="color: #2563eb;">${senderEmail}</a>
+            </p>
+          </div>
+        </div>
+      `
+    };
+
+    console.log(`[Delist Engine] Dispatching email to ${recipientEmail} for IP ${ip}...`);
+    await transporter.sendMail(mailOptions);
+    console.log(`[Delist Engine] Email successfully delivered to ${recipientEmail}`);
+
+    // Automatically record in Delist Requests
+    const requests = loadDelistRequests();
+    const newRecord = {
+      id: `delist_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      ip,
+      providerId,
+      providerName,
+      recipientEmail,
+      delistUrl,
+      companyName,
+      senderName,
+      senderEmail,
+      reasonCategory,
+      subject,
+      message,
+      status: 'submitted',
+      sendMethod: 'smtp',
+      submittedAt: new Date().toISOString()
+    };
+    requests.unshift(newRecord);
+    saveDelistRequests(requests);
+
+    res.json({ success: true, message: `Delisting appeal delivered to ${recipientEmail}`, request: newRecord });
+  } catch (err: any) {
+    console.error("[Delist Engine] Send error:", err);
+    res.status(500).json({ error: `Failed to dispatch delist email: ${err.message}` });
+  }
+});
+
+// Get SMTP Configuration
+app.get("/api/settings/smtp", (req, res) => {
+  try {
+    const smtp = loadSmtpSettings();
+    res.json({
+      host: smtp.host || "",
+      port: smtp.port || 587,
+      secure: Boolean(smtp.secure),
+      user: smtp.user || "",
+      fromName: smtp.fromName || "Wolast Security NOC",
+      fromEmail: smtp.fromEmail || "abuse@wolast.com",
+      companyName: smtp.companyName || "Wolast Technology Ltd.",
+      isConfigured: Boolean(smtp.host && smtp.user)
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to load SMTP settings: ${err.message}` });
+  }
+});
+
+// Save SMTP Configuration
+app.post("/api/settings/smtp", (req, res) => {
+  try {
+    const { host, port, secure, user, pass, fromName, fromEmail, companyName } = req.body;
+    const current = loadSmtpSettings();
+
+    const updated = {
+      host: host || "",
+      port: Number(port) || 587,
+      secure: Boolean(secure),
+      user: user || "",
+      pass: pass ? pass : current.pass, // preserve existing password if blank
+      fromName: fromName || "Wolast Security NOC",
+      fromEmail: fromEmail || "abuse@wolast.com",
+      companyName: companyName || "Wolast Technology Ltd."
+    };
+
+    saveSmtpSettings(updated);
+    res.json({ success: true, message: "SMTP configuration saved" });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to save SMTP settings: ${err.message}` });
+  }
+});
+
+// Test SMTP Connection
+app.post("/api/settings/smtp/test", async (req, res) => {
+  try {
+    const { host, port, secure, user, pass, fromName, fromEmail, testEmail } = req.body;
+    const current = loadSmtpSettings();
+    const effectivePass = pass || current.pass;
+
+    if (!host || !user || !effectivePass) {
+      return res.status(400).json({ error: "Host, user, and password are required to test SMTP." });
+    }
+
+    const transporter = nodemailer.createTransport({
+      host,
+      port: Number(port) || 587,
+      secure: Boolean(secure),
+      auth: {
+        user,
+        pass: effectivePass
+      },
+      tls: {
+        rejectUnauthorized: false
+      }
+    });
+
+    // 1. Verify connection
+    await transporter.verify();
+
+    // 2. Send test email
+    const recipient = testEmail || fromEmail || user;
+    await transporter.sendMail({
+      from: `"${fromName || 'Wolast Security'}" <${fromEmail || user}>`,
+      to: recipient,
+      subject: "[WolastShield] SMTP Connection Verification Succeeded",
+      text: "Congratulations! Your SMTP outgoing mail server is properly configured and authenticated. You can now dispatch automated blacklist delisting appeals directly from WolastShield.",
+      html: `
+        <div style="font-family: sans-serif; padding: 20px; color: #1e293b; max-width: 500px; border: 1px solid #e2e8f0; border-radius: 12px;">
+          <h2 style="color: #059669; margin-top: 0;">✓ SMTP Verification Successful</h2>
+          <p style="font-size: 14px; line-height: 1.5;">
+            Your outgoing mail server credentials have been verified. WolastShield is now ready to dispatch official blacklist removal appeals to abuse and security desks.
+          </p>
+          <div style="background: #f8fafc; padding: 12px; border-radius: 8px; font-size: 12px; font-family: monospace;">
+            Host: ${host}:${port}<br/>
+            User: ${user}<br/>
+            Security: ${secure ? 'SSL/TLS' : 'STARTTLS'}<br/>
+            Timestamp: ${new Date().toISOString()}
+          </div>
+        </div>
+      `
+    });
+
+    res.json({ success: true, message: `Test email successfully sent to ${recipient}` });
+  } catch (err: any) {
+    console.error("[SMTP Test] Error:", err);
+    res.status(500).json({ error: `SMTP Connection failed: ${err.message}` });
+  }
+});
+
+// System Quota and Storage Diagnostics
+let firestoreWriteQuotaExhausted = true; // Initialized to true because the free Spark daily write quota limit is reached; prevents noisy GrpcConnection retry streams
+
+app.get("/api/system/quota", (req, res) => {
+  res.json({
+    firestoreWriteQuotaExhausted,
+    storageMode: firestoreWriteQuotaExhausted ? "local_persistent" : "hybrid_cloud",
+    projectId: "winged-weaver-gcf5x",
+    firestoreDatabaseId: "ai-studio-ipblacklistcheck-8f4ec590-213f-4737-9ee1-f4548e64520d",
+    consoleUrl: "https://console.firebase.google.com/project/winged-weaver-gcf5x/firestore/databases/ai-studio-ipblacklistcheck-8f4ec590-213f-4737-9ee1-f4548e64520d/data?openUpgradeDialog=true",
+    resetWindow: "Daily at 00:00 UTC"
+  });
 });
 
 // Initialize Firebase on server
@@ -2790,8 +3170,8 @@ async function runMonitoringDaemon() {
         updatedIPsList.push(updatedFields);
       }
 
-      // Sync updated reputation telemetry to Firestore if connected
-      if (serverDb) {
+      // Sync updated reputation telemetry to Firestore if connected and quota is available
+      if (serverDb && !firestoreWriteQuotaExhausted) {
         try {
           const docRef = doc(serverDb, "monitored_ips", item.id);
           await updateDoc(docRef, sanitizeFirestoreData({
@@ -2804,7 +3184,13 @@ async function runMonitoringDaemon() {
             lastChecked: new Date().toISOString()
           }));
         } catch (fUpdateErr: any) {
-          console.warn(`[WolastShield Daemon] Firestore doc update for ${item.id} skipped: ${fUpdateErr.message}`);
+          const errMsg = fUpdateErr?.message || String(fUpdateErr);
+          if (fUpdateErr?.code === 'resource-exhausted' || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('Quota limit exceeded')) {
+            console.warn(`[WolastShield Daemon] Firestore daily write quota reached. Switching daemon to local JSON store.`);
+            firestoreWriteQuotaExhausted = true;
+          } else {
+            console.warn(`[WolastShield Daemon] Firestore doc update for ${item.id} skipped: ${errMsg}`);
+          }
         }
       }
 
@@ -2857,7 +3243,22 @@ async function startServer() {
   // Vite integration
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        watch: {
+          ignored: [
+            '**/data/**',
+            '**/*.json',
+            '**/*.bak',
+            '**/*.tmp*',
+            '**/users_store.json*',
+            '**/scans_store.json*',
+            '**/monitored_ips_store.json*',
+            '**/daily_reports_store.json*',
+            '**/server-*.json*'
+          ]
+        }
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
