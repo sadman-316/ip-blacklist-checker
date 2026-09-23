@@ -13,10 +13,16 @@ import {
   Sparkles, 
   AlertCircle, 
   Info, 
-  HelpCircle,
   X,
   Loader2,
-  RefreshCw
+  RefreshCw,
+  Globe,
+  ArrowRight,
+  ShieldCheck,
+  CheckCircle,
+  HelpCircle,
+  SlidersHorizontal,
+  ChevronRight
 } from 'lucide-react';
 import { UserProfile, DelistRequest } from '../types';
 
@@ -41,41 +47,31 @@ interface DelistRequestModalProps {
   onSuccess?: (newRequest: DelistRequest) => void;
 }
 
-// Standard fallback removal emails for major DNSBL and threat feeds
-const DEFAULT_PROVIDER_EMAILS: Record<string, string> = {
-  spamhaus: 'removal@spamhaus.org',
-  barracuda: 'intent@barracudacentral.org',
-  spamcop: 'deputy@admin.spamcop.net',
-  uceprotect1: 'delist@uceprotect.net',
-  uceprotect2: 'delist@uceprotect.net',
-  uceprotect3: 'delist@uceprotect.net',
-  blocklist: 'info@blocklist.de',
-  sorbs: 'delist@sorbs.net',
-  sorbsduhl: 'delist@sorbs.net',
-  dronebl: 'staff@dronebl.org',
-  gbudb: 'support@gbudb.com',
-  spfbl: 'abuse@spfbl.net',
-  lashback: 'removal@lashback.com',
-  psbl: 'psbl@surriel.com',
-  wpbl: 'admin@wpbl.info',
-  ivmsip: 'removal@invaluement.com',
-  ivmuri: 'removal@invaluement.com',
-  spamrats: 'removal@spamrats.com',
-  spamratssb: 'removal@spamrats.com',
-  spamratsnoptr: 'removal@spamrats.com',
-  mailspikebl: 'support@mailspike.org',
-  mailspikez: 'support@mailspike.org',
-  hostkarma: 'support@junkemailfilter.com',
-  nixspam: 'abuse@nixspam.net',
-  nordspam: 'abuse@nordspam.com',
-  '0spam': 'delist@0spam.org',
-  backscatterer: 'delist@backscatterer.org',
-  spameatingmonkey: 'admin@spameatingmonkey.com',
-  abuseat_cbl: 'cbl@abuseat.org',
-  suomispam: 'abuse@suomispam.net',
-  zapbl: 'abuse@zapbl.net',
-  protectedsky: 'support@protectedsky.com',
-  swinog: 'abuse@swinog.ch'
+// Standard removal emails & turnaround time for major DNSBLs
+const PROVIDER_METADATA: Record<string, { email: string; avgTime: string; priority: 'high' | 'medium' | 'critical' }> = {
+  spamhaus: { email: 'removal@spamhaus.org', avgTime: '1 - 4 hours', priority: 'critical' },
+  barracuda: { email: 'intent@barracudacentral.org', avgTime: '12 - 24 hours', priority: 'critical' },
+  spamcop: { email: 'deputy@admin.spamcop.net', avgTime: '24 - 48 hours', priority: 'high' },
+  uceprotect1: { email: 'delist@uceprotect.net', avgTime: '7 days auto-expire', priority: 'high' },
+  uceprotect2: { email: 'delist@uceprotect.net', avgTime: '7 days auto-expire', priority: 'medium' },
+  uceprotect3: { email: 'delist@uceprotect.net', avgTime: '7 days auto-expire', priority: 'medium' },
+  blocklist: { email: 'info@blocklist.de', avgTime: '2 - 6 hours', priority: 'high' },
+  sorbs: { email: 'delist@sorbs.net', avgTime: 'Manual portal', priority: 'medium' },
+  dronebl: { email: 'staff@dronebl.org', avgTime: '24 hours', priority: 'critical' },
+  gbudb: { email: 'support@gbudb.com', avgTime: 'Dynamic decay', priority: 'medium' },
+  spfbl: { email: 'abuse@spfbl.net', avgTime: '2 - 12 hours', priority: 'high' },
+  lashback: { email: 'removal@lashback.com', avgTime: '12 hours', priority: 'medium' },
+  psbl: { email: 'psbl@surriel.com', avgTime: 'Auto-delist 7 days', priority: 'medium' },
+  wpbl: { email: 'admin@wpbl.info', avgTime: '12 - 24 hours', priority: 'medium' },
+  ivmsip: { email: 'removal@invaluement.com', avgTime: '4 - 12 hours', priority: 'critical' },
+  ivmuri: { email: 'removal@invaluement.com', avgTime: '4 - 12 hours', priority: 'high' },
+  spamrats: { email: 'removal@spamrats.com', avgTime: 'Portal lookup', priority: 'medium' },
+  abuseat_cbl: { email: 'cbl@abuseat.org', avgTime: 'Instant portal', priority: 'critical' },
+  hostkarma: { email: 'support@junkemailfilter.com', avgTime: '1 - 3 days', priority: 'medium' },
+  nixspam: { email: 'abuse@nixspam.net', avgTime: 'Dynamic decay', priority: 'medium' },
+  nordspam: { email: 'abuse@nordspam.com', avgTime: '12 hours', priority: 'medium' },
+  '0spam': { email: 'delist@0spam.org', avgTime: 'Instant portal', priority: 'medium' },
+  backscatterer: { email: 'delist@backscatterer.org', avgTime: '4 weeks decay', priority: 'medium' }
 };
 
 const REASON_TEMPLATES = [
@@ -182,6 +178,20 @@ export function DelistRequestModal({
   const [scanningIP, setScanningIP] = useState<boolean>(false);
   const [liveCheckStatus, setLiveCheckStatus] = useState<{ listedCount: number; clean: boolean } | null>(null);
 
+  // Server SMTP config check
+  const [serverSmtpConfigured, setServerSmtpConfigured] = useState<boolean>(false);
+
+  useEffect(() => {
+    fetch('/api/settings/smtp')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.isConfigured) {
+          setServerSmtpConfigured(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   // Available Providers: combine incoming listedProviders with fallback defaults
   const [availableProviders, setAvailableProviders] = useState(() => {
     if (listedProviders && listedProviders.length > 0) {
@@ -209,13 +219,21 @@ export function DelistRequestModal({
   // Recipient email
   const recipientEmail = useMemo(() => {
     if (activeProvider.delistEmail) return activeProvider.delistEmail;
-    if (DEFAULT_PROVIDER_EMAILS[activeProvider.id]) return DEFAULT_PROVIDER_EMAILS[activeProvider.id];
-    // derive standard abuse / delist address from domain
+    if (PROVIDER_METADATA[activeProvider.id]?.email) return PROVIDER_METADATA[activeProvider.id].email;
     const cleanDomain = activeProvider.domain.replace(/^([a-z0-9-]+\.)*(dnsbl|bl|zen|rbl|truncate|sip|uri)\./i, '');
     return `abuse@${cleanDomain}`;
   }, [activeProvider]);
 
-  // Live Quick Scan for the typed IP address
+  const providerTurnaround = useMemo(() => {
+    return PROVIDER_METADATA[activeProvider.id]?.avgTime || '24 - 48 hours';
+  }, [activeProvider]);
+
+  // Detected listings specifically for this IP
+  const detectedListings = useMemo(() => {
+    return listedProviders || [];
+  }, [listedProviders]);
+
+  // Live Quick Scan for typed IP address
   const handleQuickScan = async () => {
     const ip = currentIP.trim();
     if (!ip) {
@@ -237,35 +255,35 @@ export function DelistRequestModal({
           if (scanRes.location?.isp || scanRes.location?.org) {
             setCurrentOrg(scanRes.location.org || scanRes.location.isp || '');
           }
-          const detectedListings: any[] = [];
+          const foundListings: any[] = [];
           if (scanRes.listings) {
             Object.entries(scanRes.listings).forEach(([key, val]: any) => {
               if (val && val.listed) {
                 const matched = ALL_DEFAULT_PROVIDERS.find(p => p.id === key);
-                detectedListings.push({
+                foundListings.push({
                   id: key,
                   name: val.name || matched?.name || key,
                   domain: val.domain || matched?.domain || `${key}.org`,
                   delistUrl: val.delistUrl || matched?.delistUrl || 'https://www.spamhaus.org/lookup/',
-                  delistEmail: matched?.delistEmail || DEFAULT_PROVIDER_EMAILS[key],
+                  delistEmail: matched?.delistEmail || PROVIDER_METADATA[key]?.email,
                   reason: val.details
                 });
               }
             });
           }
 
-          if (detectedListings.length > 0) {
-            const merged = [...detectedListings];
+          if (foundListings.length > 0) {
+            const merged = [...foundListings];
             ALL_DEFAULT_PROVIDERS.forEach(dp => {
               if (!merged.some(p => p.id === dp.id)) merged.push(dp);
             });
             setAvailableProviders(merged);
-            setSelectedProviderId(detectedListings[0].id);
-            setLiveCheckStatus({ listedCount: detectedListings.length, clean: false });
-            triggerAlert('warning', `Detected ${detectedListings.length} blacklist listing(s) for ${ip}. Provider auto-selected!`);
+            setSelectedProviderId(foundListings[0].id);
+            setLiveCheckStatus({ listedCount: foundListings.length, clean: false });
+            triggerAlert('warning', `Detected ${foundListings.length} blacklist listing(s) for ${ip}. Provider auto-selected!`);
           } else {
             setLiveCheckStatus({ listedCount: 0, clean: true });
-            triggerAlert('info', `No active DNSBL listings found for ${ip}. You can still choose any provider for appeal.`);
+            triggerAlert('info', `No active DNSBL listings found for ${ip}. You can choose any provider for appeal.`);
           }
         }
       }
@@ -293,45 +311,46 @@ export function DelistRequestModal({
   const [subject, setSubject] = useState<string>('');
   const [messageBody, setMessageBody] = useState<string>('');
   const [copied, setCopied] = useState<boolean>(false);
+  const [copiedSubject, setCopiedSubject] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
-  // Generate Letter Body whenever template, IP, or provider details change
+  // Generate Letter Body
   useEffect(() => {
     const selectedTemplate = REASON_TEMPLATES.find(t => t.id === reasonId) || REASON_TEMPLATES[0];
     const target = currentIP.trim() || '[TARGET_IP_ADDRESS]';
     const newSubject = `[Delisting Request] Blacklist Removal Appeal for IP ${target} - ${companyName}`;
     
     const actionsList = selectedTemplate.actionsTaken.map(a => `  * ${a}`).join('\n');
-    const customSection = customNotes.trim() ? `\n\nAdditional Technical Details:\n${customNotes.trim()}` : '';
+    const customSection = customNotes.trim() ? `\n\nAdditional Incident Notes:\n${customNotes.trim()}` : '';
 
     const body = `Dear ${activeProvider.name} Review & Security Team,
 
-I am writing on behalf of ${companyName} to formally request the re-evaluation and removal of IP address ${target} from the ${activeProvider.name} (${activeProvider.domain}) blacklist database.
+I am writing on behalf of ${companyName} to formally request the re-evaluation and removal of IP address ${target} from the ${activeProvider.name} (${activeProvider.domain}) database.
 
 Target IP Details:
 - IP Address: ${target}
 - Reverse DNS (PTR): ${currentPtr || ptr || 'Configured & Verified'}
 - Organization / ISP: ${currentOrg || org || isp || companyName}
-- Database: ${activeProvider.name} (${activeProvider.domain})
+- Blacklist Database: ${activeProvider.name} (${activeProvider.domain})
 
 Root Cause & Investigation Summary:
 ${selectedTemplate.summary}
 
-Corrective Remediation Measures Implemented:
+Remediation Measures Implemented:
 ${actionsList}${customSection}
 
-We have strictly verified that the issue is fully resolved and that no abusive or unsolicited traffic will originate from this IP address in the future. Our mail servers and network endpoints are operated strictly in accordance with RFC standards and best security practices.
+We have verified that the incident is fully resolved and that no abusive, bulk, or unauthorized traffic will originate from this IP address. Our mail servers and network endpoints comply strictly with RFC 5321, RFC 7208, and industry best practices.
 
-We kindly ask that you review our submission and delist IP ${target} at your earliest convenience. If you require any additional diagnostic logs or verification, please contact me directly at ${senderEmail}.
+We kindly request that you review our submission and delist IP ${target} at your earliest convenience. If further diagnostic logs or verification are required, please contact me directly at ${senderEmail}.
 
-Thank you for your time and assistance in maintaining internet security.
+Thank you for your assistance in maintaining internet security.
 
 Sincerely,
 
 ${senderName}
-Network Operations & Abuse Contact
+Network Operations & Abuse Desk
 ${companyName}
-Email: ${senderEmail}
+Official Contact: ${senderEmail}
 Target Host: ${target}`;
 
     setSubject(newSubject);
@@ -352,30 +371,112 @@ Target Host: ${target}`;
     try {
       await navigator.clipboard.writeText(`${subject}\n\n${messageBody}`);
       setCopied(true);
-      triggerAlert('success', 'Delisting appeal text copied to clipboard!');
+      triggerAlert('success', 'Appeal subject and letter copied to clipboard!');
       setTimeout(() => setCopied(false), 2500);
     } catch (err) {
-      triggerAlert('error', 'Could not copy to clipboard. Please select and copy manually.');
+      triggerAlert('error', 'Could not copy to clipboard.');
     }
   };
 
-  // 1-Click Send via Email Client (mailto:)
-  const handleOpenMailClient = () => {
+  const handleCopySubject = async () => {
+    try {
+      await navigator.clipboard.writeText(subject);
+      setCopiedSubject(true);
+      triggerAlert('success', 'Subject line copied!');
+      setTimeout(() => setCopiedSubject(false), 2000);
+    } catch (err) {}
+  };
+
+  // Save record to backend tracker
+  const recordAppeal = async (method: 'smtp' | 'client_mailto' | 'web_portal' | 'gmail_web' | 'outlook_web' | 'clipboard') => {
+    const ipToSend = currentIP.trim();
+    if (!ipToSend) return;
+    try {
+      const record: Partial<DelistRequest> = {
+        ip: ipToSend,
+        providerId: activeProvider.id,
+        providerName: activeProvider.name,
+        recipientEmail: recipientEmail,
+        delistUrl: activeProvider.delistUrl,
+        companyName,
+        senderName,
+        senderEmail,
+        reasonCategory: REASON_TEMPLATES.find(t => t.id === reasonId)?.label || reasonId,
+        subject,
+        message: messageBody,
+        status: method === 'smtp' ? 'submitted' : 'pending',
+        sendMethod: method,
+        submittedAt: new Date().toISOString()
+      };
+
+      const res = await fetch('/api/delist/requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(record)
+      });
+      const data = await res.json();
+      if (res.ok && data.request && onSuccess) {
+        onSuccess(data.request);
+      }
+    } catch (err) {
+      console.warn('Could not save delist record to server:', err);
+    }
+  };
+
+  // 1-Click Launch via Gmail Webmail (100% reliable, zero SMTP issues!)
+  const handleOpenGmailWeb = () => {
     const ipToSend = currentIP.trim();
     if (!ipToSend) {
-      triggerAlert('error', 'Please enter a valid IP address to delist.');
+      triggerAlert('error', 'Please enter a valid IP address.');
+      return;
+    }
+    saveSenderInfo();
+    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(recipientEmail)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(messageBody)}`;
+    window.open(gmailUrl, '_blank', 'noopener,noreferrer');
+    recordAppeal('gmail_web');
+    triggerAlert('success', `Opened in Gmail for ${recipientEmail}! Just click 'Send' in your Gmail tab.`);
+  };
+
+  // 1-Click Launch via Microsoft Outlook / Office 365 Web
+  const handleOpenOutlookWeb = () => {
+    const ipToSend = currentIP.trim();
+    if (!ipToSend) {
+      triggerAlert('error', 'Please enter a valid IP address.');
+      return;
+    }
+    saveSenderInfo();
+    const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(recipientEmail)}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(messageBody)}`;
+    window.open(outlookUrl, '_blank', 'noopener,noreferrer');
+    recordAppeal('outlook_web');
+    triggerAlert('success', `Opened in Outlook Web for ${recipientEmail}! Just click 'Send' in Outlook.`);
+  };
+
+  // 1-Click Send via Default Native Email Client (mailto:)
+  const handleOpenNativeMail = () => {
+    const ipToSend = currentIP.trim();
+    if (!ipToSend) {
+      triggerAlert('error', 'Please enter a valid IP address.');
       return;
     }
     saveSenderInfo();
     const mailtoUrl = `mailto:${encodeURIComponent(recipientEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(messageBody)}`;
-    window.open(mailtoUrl, '_blank');
-    
-    // Save to request log as client-dispatched
-    saveDelistRecord('client_mailto');
-    triggerAlert('info', `Opened default email client for ${recipientEmail}. Request logged as Pending.`);
+    window.location.href = mailtoUrl;
+    recordAppeal('client_mailto');
+    triggerAlert('info', `Opened default mail client for ${recipientEmail}. Request logged in tracker.`);
   };
 
-  // Direct Server SMTP Dispatch
+  // Open Web Delist Portal & Auto-copy Letter
+  const handleOpenWebPortal = () => {
+    saveSenderInfo();
+    handleCopyText();
+    if (activeProvider.delistUrl) {
+      window.open(activeProvider.delistUrl, '_blank', 'noopener,noreferrer');
+    }
+    recordAppeal('web_portal');
+    triggerAlert('success', `Copied appeal text to clipboard & opened ${activeProvider.name} portal!`);
+  };
+
+  // Server SMTP Dispatch
   const handleSendViaServerSMTP = async () => {
     const ipToSend = currentIP.trim();
     if (!ipToSend) {
@@ -407,91 +508,57 @@ Target Host: ${target}`;
       const data = await response.json();
 
       if (response.ok && data.success) {
-        triggerAlert('success', `Delisting appeal successfully dispatched to ${recipientEmail}!`);
+        triggerAlert('success', `Appeal successfully dispatched via Server SMTP to ${recipientEmail}!`);
         if (onSuccess && data.request) {
           onSuccess(data.request);
         }
         onClose();
       } else if (data.code === 'SMTP_NOT_CONFIGURED') {
-        // Offer instant 1-click fallback to mail client
-        triggerAlert('warning', data.message || 'Server SMTP not yet configured. Opening your mail client instead...');
-        handleOpenMailClient();
+        triggerAlert('warning', 'Server SMTP is not configured yet. Opening 1-Click Gmail composer instead...');
+        handleOpenGmailWeb();
       } else {
         throw new Error(data.error || 'Failed to dispatch delist email.');
       }
     } catch (err: any) {
       console.error('Delist submission error:', err);
-      triggerAlert('error', err.message || 'Failed to send appeal. You can use the 1-click mail client option.');
+      triggerAlert('error', err.message || 'SMTP dispatch failed. Try using 1-Click Gmail or Outlook!');
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Save record to database / tracker
-  const saveDelistRecord = async (method: 'smtp' | 'client_mailto' | 'web_portal') => {
-    const ipToSend = currentIP.trim();
-    if (!ipToSend) return;
-    try {
-      const record: Partial<DelistRequest> = {
-        ip: ipToSend,
-        providerId: activeProvider.id,
-        providerName: activeProvider.name,
-        recipientEmail: recipientEmail,
-        delistUrl: activeProvider.delistUrl,
-        companyName,
-        senderName,
-        senderEmail,
-        reasonCategory: REASON_TEMPLATES.find(t => t.id === reasonId)?.label || reasonId,
-        subject,
-        message: messageBody,
-        status: 'pending',
-        sendMethod: method,
-        submittedAt: new Date().toISOString()
-      };
-
-      const res = await fetch('/api/delist/requests', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(record)
-      });
-      const data = await res.json();
-      if (res.ok && data.request && onSuccess) {
-        onSuccess(data.request);
-      }
-    } catch (err) {
-      console.warn('Could not save delist record to server:', err);
-    }
-  };
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/75 backdrop-blur-xs overflow-y-auto animate-fade-in" id="delist-request-modal">
-      <div className="bg-white rounded-2xl max-w-3xl w-full border border-slate-200 shadow-2xl overflow-hidden my-6 flex flex-col max-h-[92vh]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-xs overflow-y-auto animate-fade-in" id="delist-request-modal">
+      <div className="bg-white rounded-2xl max-w-4xl w-full border border-slate-200/90 shadow-2xl overflow-hidden my-4 flex flex-col max-h-[94vh]">
         
-        {/* Header */}
-        <div className="bg-slate-900 text-white p-5 flex justify-between items-center border-b border-slate-800 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-red-600/20 border border-red-500/30 flex items-center justify-center text-red-500">
+        {/* Luxury Enterprise Header */}
+        <div className="bg-slate-950 text-white p-5 flex justify-between items-center border-b border-slate-800 shrink-0">
+          <div className="flex items-center gap-3.5">
+            <div className="w-10 h-10 rounded-xl bg-red-600/20 border border-red-500/30 flex items-center justify-center text-red-500 shrink-0">
               <Mail className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm sm:text-base font-black uppercase tracking-wider text-white">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm sm:text-base font-black tracking-tight text-white uppercase">
                   Blacklist Removal Appeal Engine
                 </h3>
                 {currentIP && (
-                  <span className="bg-red-500/20 text-red-400 border border-red-500/30 text-[10px] font-mono px-2 py-0.5 rounded-full font-bold">
+                  <span className="bg-red-500/20 text-red-400 border border-red-500/30 text-[11px] font-mono px-2.5 py-0.5 rounded-md font-bold">
                     {currentIP}
                   </span>
                 )}
+                <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded">
+                  Direct NOC Desk
+                </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Submit formal NOC delisting requests to blacklist maintainers and security desks
+                Official remediation appeals formatted for DNSBL maintainers, email gateways & threat desks
               </p>
             </div>
           </div>
           <button 
             onClick={onClose}
-            className="text-slate-400 hover:text-white transition-colors cursor-pointer p-1.5 rounded-lg hover:bg-white/10"
+            className="text-slate-400 hover:text-white transition-colors cursor-pointer p-2 rounded-xl hover:bg-white/10"
             title="Close"
           >
             <X className="w-5 h-5" />
@@ -499,10 +566,43 @@ Target Host: ${target}`;
         </div>
 
         {/* Modal Scrollable Body */}
-        <div className="p-5 sm:p-6 overflow-y-auto space-y-5 text-slate-800 text-xs">
+        <div className="p-5 sm:p-6 overflow-y-auto space-y-6 text-slate-800 text-xs">
           
-          {/* Top Bar: Target IP & Provider Selector */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
+          {/* Quick Listing Pills for detected RBLs */}
+          {detectedListings.length > 0 && (
+            <div className="p-3 bg-red-50/70 border border-red-200/80 rounded-xl space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-black uppercase tracking-wider text-red-900 flex items-center gap-1.5">
+                  <ShieldAlert className="w-3.5 h-3.5 text-red-600" />
+                  <span>Detected Blacklist Listings on this IP ({detectedListings.length})</span>
+                </span>
+                <span className="text-[10px] text-red-700 font-semibold">Click to appeal each provider:</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {detectedListings.map(item => {
+                  const isSelected = selectedProviderId === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setSelectedProviderId(item.id)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                        isSelected 
+                          ? 'bg-red-600 text-white shadow-xs' 
+                          : 'bg-white hover:bg-red-100/70 text-red-800 border border-red-200'
+                      }`}
+                    >
+                      <span>{item.name}</span>
+                      {isSelected ? <CheckCircle className="w-3 h-3 text-white" /> : <span className="text-red-500 font-mono text-[10px]">✕</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Section 1: Target IP & Provider Details Card */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50/80 p-4.5 rounded-xl border border-slate-200/90">
             <div>
               <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 block mb-1.5">
                 Target IP Address To Delist <span className="text-red-500">*</span>
@@ -512,42 +612,44 @@ Target Host: ${target}`;
                   type="text"
                   value={currentIP}
                   onChange={(e) => setCurrentIP(e.target.value.trim())}
-                  placeholder="Enter IP to delist (e.g. 103.150.12.5)"
+                  placeholder="Enter IP address (e.g. 185.190.140.5)"
                   className="flex-1 px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
                 />
                 <button
                   type="button"
                   onClick={handleQuickScan}
                   disabled={scanningIP || !currentIP.trim()}
-                  className="px-3 py-2 bg-slate-900 hover:bg-black text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shrink-0 transition-all cursor-pointer disabled:opacity-50"
-                  title="Check live reputation & listings for this IP"
+                  className="px-3.5 py-2.5 bg-slate-900 hover:bg-black text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shrink-0 transition-all cursor-pointer disabled:opacity-50"
+                  title="Verify live blacklist listings for this IP"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${scanningIP ? 'animate-spin' : ''}`} />
                   <span>{scanningIP ? 'Checking...' : 'Check RBLs'}</span>
                 </button>
               </div>
-              <div className="flex items-center justify-between text-[11px] text-slate-500 mt-1.5">
-                <span className="truncate max-w-xs">{currentPtr || ptr || 'rDNS PTR verification'}</span>
+              <div className="flex items-center justify-between text-[11px] text-slate-500 mt-2">
+                <span className="truncate max-w-xs font-mono text-[11px] text-slate-600">
+                  rDNS: {currentPtr || ptr || 'No PTR Verified'}
+                </span>
                 {liveCheckStatus ? (
                   <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md ${
-                    liveCheckStatus.listedCount > 0 ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'
+                    liveCheckStatus.listedCount > 0 ? 'bg-red-100 text-red-800' : 'bg-emerald-100 text-emerald-800'
                   }`}>
                     {liveCheckStatus.listedCount > 0 ? `${liveCheckStatus.listedCount} Listed` : 'Clean'}
                   </span>
                 ) : (
-                  <span className="text-[10px] text-slate-400">Type IP & click Check RBLs</span>
+                  <span className="text-[10px] text-slate-400">Target host ready</span>
                 )}
               </div>
             </div>
 
             <div>
               <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 block mb-1.5">
-                Select Blacklist Provider ({availableProviders.length} Available)
+                Blacklist Authority Database ({availableProviders.length} Providers)
               </label>
               <select
                 value={selectedProviderId}
                 onChange={(e) => setSelectedProviderId(e.target.value)}
-                className="w-full bg-white px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs font-bold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-red-500/20"
+                className="w-full bg-white px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs font-bold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-red-500/20 cursor-pointer"
               >
                 {availableProviders.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -555,33 +657,171 @@ Target Host: ${target}`;
                   </option>
                 ))}
               </select>
-              <div className="flex items-center justify-between text-[11px] text-slate-500 mt-1.5">
-                <span>Official Appeal Desk: <strong className="text-slate-800 font-mono">{recipientEmail}</strong></span>
-                {activeProvider.delistUrl && (
-                  <a 
-                    href={activeProvider.delistUrl} 
-                    target="_blank" 
-                    rel="noreferrer"
-                    className="text-red-600 hover:text-red-700 font-bold inline-flex items-center gap-0.5"
-                  >
-                    Portal <ExternalLink className="w-2.5 h-2.5" />
-                  </a>
-                )}
+              <div className="flex items-center justify-between text-[11px] text-slate-600 mt-2">
+                <span>
+                  Official Desk: <strong className="text-slate-900 font-mono">{recipientEmail}</strong>
+                </span>
+                <span className="text-[10px] text-slate-500 font-medium">
+                  SLA: <strong className="text-slate-700">{providerTurnaround}</strong>
+                </span>
               </div>
             </div>
           </div>
 
-          {/* Company & Sender Information Inputs */}
+          {/* Section 2: One-Click Send Hub (Highlighted Fast Actions) */}
+          <div className="bg-gradient-to-br from-slate-900 to-zinc-950 text-white p-5 rounded-2xl border border-slate-800 shadow-md space-y-3.5">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-widest text-red-400 block">
+                  Fast-Track Delist Dispatch Hub
+                </span>
+                <h4 className="text-sm font-extrabold text-white flex items-center gap-1.5 mt-0.5">
+                  <Sparkles className="w-4 h-4 text-amber-400" />
+                  <span>Choose Your Preferred Sending Method</span>
+                </h4>
+              </div>
+              <span className="text-[11px] text-slate-400">
+                Recipient: <strong className="text-white font-mono">{recipientEmail}</strong>
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              
+              {/* Option 1: 1-Click Gmail Web (Zero SMTP configuration required) */}
+              <button
+                type="button"
+                onClick={handleOpenGmailWeb}
+                className="p-3.5 bg-white/10 hover:bg-white/15 border border-white/15 hover:border-red-500/50 rounded-xl text-left transition-all cursor-pointer group flex flex-col justify-between space-y-2 shadow-xs"
+                title="Opens official Gmail composer with recipient, subject, and letter pre-filled"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="w-8 h-8 rounded-lg bg-red-600/30 border border-red-500/40 flex items-center justify-center text-red-400 group-hover:scale-105 transition-transform">
+                    <Mail className="w-4 h-4" />
+                  </div>
+                  <span className="text-[9px] font-black uppercase tracking-wider bg-red-500/20 text-red-300 px-1.5 py-0.5 rounded">
+                    Popular
+                  </span>
+                </div>
+                <div>
+                  <div className="font-extrabold text-xs text-white group-hover:text-red-400 transition-colors">
+                    1-Click Gmail
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-0.5 leading-snug">
+                    Opens your Gmail tab with everything pre-filled. No setup needed!
+                  </div>
+                </div>
+                <div className="text-[10px] font-bold text-red-400 flex items-center gap-1">
+                  <span>Open &amp; Send</span>
+                  <ExternalLink className="w-3 h-3" />
+                </div>
+              </button>
+
+              {/* Option 2: 1-Click Outlook / Office 365 Web */}
+              <button
+                type="button"
+                onClick={handleOpenOutlookWeb}
+                className="p-3.5 bg-white/10 hover:bg-white/15 border border-white/15 hover:border-blue-500/50 rounded-xl text-left transition-all cursor-pointer group flex flex-col justify-between space-y-2 shadow-xs"
+                title="Opens Outlook.com or Office 365 composer with letter pre-filled"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="w-8 h-8 rounded-lg bg-blue-600/30 border border-blue-500/40 flex items-center justify-center text-blue-400 group-hover:scale-105 transition-transform">
+                    <Mail className="w-4 h-4" />
+                  </div>
+                  <span className="text-[9px] font-black uppercase tracking-wider bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded">
+                    Webmail
+                  </span>
+                </div>
+                <div>
+                  <div className="font-extrabold text-xs text-white group-hover:text-blue-400 transition-colors">
+                    1-Click Outlook
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-0.5 leading-snug">
+                    Direct compose in Outlook/Office365 browser webmail.
+                  </div>
+                </div>
+                <div className="text-[10px] font-bold text-blue-400 flex items-center gap-1">
+                  <span>Open &amp; Send</span>
+                  <ExternalLink className="w-3 h-3" />
+                </div>
+              </button>
+
+              {/* Option 3: Web Delist Portal */}
+              <button
+                type="button"
+                onClick={handleOpenWebPortal}
+                className="p-3.5 bg-white/10 hover:bg-white/15 border border-white/15 hover:border-emerald-500/50 rounded-xl text-left transition-all cursor-pointer group flex flex-col justify-between space-y-2 shadow-xs"
+                title="Copies appeal text and opens official web portal"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-600/30 border border-emerald-500/40 flex items-center justify-center text-emerald-400 group-hover:scale-105 transition-transform">
+                    <Globe className="w-4 h-4" />
+                  </div>
+                  <span className="text-[9px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded">
+                    Official
+                  </span>
+                </div>
+                <div>
+                  <div className="font-extrabold text-xs text-white group-hover:text-emerald-400 transition-colors">
+                    Web Removal Portal
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-0.5 leading-snug">
+                    Copies appeal to clipboard &amp; opens the portal form.
+                  </div>
+                </div>
+                <div className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
+                  <span>Open Portal</span>
+                  <ExternalLink className="w-3 h-3" />
+                </div>
+              </button>
+
+              {/* Option 4: Server SMTP Automated Dispatch */}
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={handleSendViaServerSMTP}
+                className="p-3.5 bg-white/10 hover:bg-white/15 border border-white/15 hover:border-purple-500/50 rounded-xl text-left transition-all cursor-pointer group flex flex-col justify-between space-y-2 shadow-xs disabled:opacity-50"
+                title="Direct background server delivery via Nodemailer"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="w-8 h-8 rounded-lg bg-purple-600/30 border border-purple-500/40 flex items-center justify-center text-purple-400 group-hover:scale-105 transition-transform">
+                    {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  </div>
+                  <span className={`text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                    serverSmtpConfigured ? 'bg-purple-500/20 text-purple-300' : 'bg-amber-500/20 text-amber-300'
+                  }`}>
+                    {serverSmtpConfigured ? 'Ready' : 'Auto-Route'}
+                  </span>
+                </div>
+                <div>
+                  <div className="font-extrabold text-xs text-white group-hover:text-purple-400 transition-colors">
+                    Server Direct SMTP
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-0.5 leading-snug">
+                    {serverSmtpConfigured 
+                      ? 'Nodemailer background dispatch is active.' 
+                      : 'Dispatches instantly or falls back cleanly.'}
+                  </div>
+                </div>
+                <div className="text-[10px] font-bold text-purple-400 flex items-center gap-1">
+                  <span>{isSubmitting ? 'Sending...' : 'Dispatch'}</span>
+                  <ChevronRight className="w-3 h-3" />
+                </div>
+              </button>
+
+            </div>
+          </div>
+
+          {/* Section 3: Sender Contact Info */}
           <div className="space-y-3">
             <h4 className="text-xs font-black uppercase tracking-wider text-slate-900 flex items-center gap-1.5">
               <Building2 className="w-3.5 h-3.5 text-red-600" />
-              <span>Your Company & Contact Information</span>
+              <span>NOC Sender &amp; Organization Details</span>
             </h4>
             
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 block mb-1">
-                  Company Name <span className="text-red-500">*</span>
+                  Company / Carrier Name <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="text"
@@ -594,20 +834,20 @@ Target Host: ${target}`;
 
               <div>
                 <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 block mb-1">
-                  Sender / Contact Name <span className="text-red-500">*</span>
+                  Sender Contact Name <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="text"
                   value={senderName}
                   onChange={(e) => setSenderName(e.target.value)}
-                  placeholder="e.g. Md. Pranto / Network Admin"
+                  placeholder="e.g. Md. Pranto"
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-red-500/20"
                 />
               </div>
 
               <div>
                 <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 block mb-1">
-                  Official Contact Email <span className="text-red-500">*</span>
+                  Official Abuse / Contact Email <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="email"
@@ -620,11 +860,11 @@ Target Host: ${target}`;
             </div>
           </div>
 
-          {/* Reason & Resolution Template Selector */}
+          {/* Section 4: Remediation Reason Selector */}
           <div className="space-y-2.5">
             <h4 className="text-xs font-black uppercase tracking-wider text-slate-900 flex items-center gap-1.5">
               <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-              <span>Remediation Reason & Root Cause Resolution</span>
+              <span>Remediation Classification &amp; Root Cause Explanation</span>
             </h4>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -633,9 +873,9 @@ Target Host: ${target}`;
                   key={tpl.id}
                   type="button"
                   onClick={() => setReasonId(tpl.id)}
-                  className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer flex flex-col justify-between ${
+                  className={`p-3 rounded-xl text-left border transition-all cursor-pointer flex flex-col justify-between ${
                     reasonId === tpl.id 
-                      ? 'bg-red-50/70 border-red-500 text-red-900 shadow-2xs' 
+                      ? 'bg-red-50/80 border-red-500 text-red-900 shadow-2xs' 
                       : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
                   }`}
                 >
@@ -645,33 +885,42 @@ Target Host: ${target}`;
               ))}
             </div>
 
-            {/* Custom Notes addendum */}
             <div className="pt-1">
               <input
                 type="text"
                 value={customNotes}
                 onChange={(e) => setCustomNotes(e.target.value)}
-                placeholder="Optional: Enter specific incident ID, ticket #, or custom diagnostic note..."
+                placeholder="Optional: Add incident ticket number, server hostname, or custom technical note..."
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-red-500/20"
               />
             </div>
           </div>
 
-          {/* Preview & Edit Generated Appeal Letter */}
-          <div className="space-y-2">
+          {/* Section 5: Formatted Appeal Letter (Preview & Edit) */}
+          <div className="space-y-2.5">
             <div className="flex justify-between items-center">
               <h4 className="text-xs font-black uppercase tracking-wider text-slate-900 flex items-center gap-1.5">
                 <FileText className="w-3.5 h-3.5 text-blue-600" />
                 <span>Formal NOC Appeal Letter (Editable)</span>
               </h4>
-              <button
-                type="button"
-                onClick={handleCopyText}
-                className="text-[11px] font-bold text-slate-600 hover:text-slate-900 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded-lg transition-colors"
-              >
-                {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-                <span>{copied ? 'Copied!' : 'Copy Appeal'}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleCopySubject}
+                  className="text-[11px] font-bold text-slate-600 hover:text-slate-900 flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded-lg transition-colors"
+                >
+                  {copiedSubject ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedSubject ? 'Subject Copied' : 'Copy Subject'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCopyText}
+                  className="text-[11px] font-bold text-slate-800 hover:text-black flex items-center gap-1.5 cursor-pointer bg-slate-200 hover:bg-slate-300 px-3 py-1 rounded-lg transition-colors font-mono"
+                >
+                  {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3 text-slate-700" />}
+                  <span>{copied ? 'Copied Full Appeal!' : 'Copy Entire Appeal'}</span>
+                </button>
+              </div>
             </div>
 
             <div>
@@ -691,7 +940,7 @@ Target Host: ${target}`;
                 Message Body
               </label>
               <textarea
-                rows={9}
+                rows={8}
                 value={messageBody}
                 onChange={(e) => setMessageBody(e.target.value)}
                 className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs text-slate-800 leading-relaxed focus:outline-hidden focus:ring-2 focus:ring-red-500/20 resize-y"
@@ -701,65 +950,35 @@ Target Host: ${target}`;
 
         </div>
 
-        {/* Modal Footer with 3 Sending Options */}
+        {/* Modal Bottom Action Bar */}
         <div className="p-4 sm:p-5 bg-slate-50 border-t border-slate-200 shrink-0 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-slate-500 text-[11px]">
             <Info className="w-4 h-4 text-blue-600 shrink-0" />
-            <span>Sends formal review appeal to <strong className="text-slate-800">{recipientEmail}</strong></span>
+            <span>Sends formal appeal to <strong className="text-slate-900 font-mono">{recipientEmail}</strong></span>
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-2.5 w-full sm:w-auto">
-            
-            {/* Option A: Web Portal Fallback */}
-            {activeProvider.delistUrl && (
-              <a
-                href={activeProvider.delistUrl}
-                target="_blank"
-                rel="noreferrer"
-                onClick={() => {
-                  saveSenderInfo();
-                  handleCopyText();
-                  saveDelistRecord('web_portal');
-                }}
-                className="px-3.5 py-2.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 font-bold rounded-xl text-xs transition-all flex items-center gap-1.5 cursor-pointer"
-                title="Copies appeal text & opens official delist portal"
-              >
-                <span>Web Portal</span>
-                <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
-              </a>
-            )}
-
-            {/* Option B: 1-Click Send via Email Client (Gmail/Outlook) */}
+            {/* Quick Mailto for local clients */}
             <button
               type="button"
-              onClick={handleOpenMailClient}
-              className="px-3.5 py-2.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-bold rounded-xl text-xs transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs"
-              title="Opens your installed email client with all details filled in"
+              onClick={handleOpenNativeMail}
+              className="px-3.5 py-2.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 font-bold rounded-xl text-xs transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs"
+              title="Open default system mail client"
             >
-              <Mail className="w-3.5 h-3.5 text-slate-700" />
-              <span>Send via Email Client</span>
+              <Mail className="w-3.5 h-3.5 text-slate-600" />
+              <span>Mail App</span>
             </button>
 
-            {/* Option C: Direct Server SMTP Dispatch */}
+            {/* 1-Click Gmail Action in footer as well */}
             <button
               type="button"
-              disabled={isSubmitting}
-              onClick={handleSendViaServerSMTP}
-              className="px-5 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-extrabold rounded-xl text-xs transition-all flex items-center gap-2 cursor-pointer shadow-xs"
+              onClick={handleOpenGmailWeb}
+              className="px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white font-black rounded-xl text-xs transition-all flex items-center gap-2 cursor-pointer shadow-sm"
+              title="Open in Gmail (Recommended & Easiest)"
             >
-              {isSubmitting ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Dispatching Email...</span>
-                </>
-              ) : (
-                <>
-                  <Send className="w-3.5 h-3.5" />
-                  <span>Dispatch Delist Email (SMTP)</span>
-                </>
-              )}
+              <Mail className="w-3.5 h-3.5" />
+              <span>Send with Gmail (1-Click)</span>
             </button>
-
           </div>
         </div>
 
