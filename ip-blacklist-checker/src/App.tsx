@@ -1602,7 +1602,15 @@ export default function App() {
             )}
           </nav>
           
-          <div className="flex items-center gap-4 pl-6 border-l border-zinc-800 shrink-0">
+          <div className="flex items-center gap-3 pl-4 border-l border-zinc-800 shrink-0">
+            <button
+              onClick={() => openDelistAppealModal(selectedIP?.ip || target || '')}
+              className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+              title="Open Blacklist Removal Appeal Engine"
+            >
+              <Mail className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Delist Appeal</span>
+            </button>
             <button
               onClick={handleLogout}
               className="hover:text-red-400 text-zinc-400 transition-colors flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider cursor-pointer"
@@ -1695,28 +1703,39 @@ export default function App() {
                   </div>
 
                   {/* Quick presets helper */}
-                  <div className="flex flex-wrap gap-2 items-center pt-1">
-                    <span className="text-[9px] text-zinc-500 font-black uppercase tracking-widest mr-1">Presets:</span>
-                    <button 
-                      type="button" 
-                      onClick={() => setTarget('185.190.140.0/28')} 
-                      className="text-[9px] bg-slate-50 hover:bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg font-mono border border-slate-200 transition-all cursor-pointer font-bold"
+                  <div className="flex flex-wrap gap-2 items-center justify-between pt-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[9px] text-zinc-500 font-black uppercase tracking-widest mr-1">Scope Presets:</span>
+                      <button 
+                        type="button" 
+                        onClick={() => setTarget('185.190.140.0/28')} 
+                        className="text-[10px] bg-slate-50 hover:bg-slate-100 text-slate-700 px-3 py-1.5 rounded-lg font-mono border border-slate-200 transition-all cursor-pointer font-bold"
+                      >
+                        185.190.140.0/28 (16 IPs)
+                      </button>
+                      <button 
+                        type="button" 
+                        onClick={() => setTarget('185.190.140.0/29')} 
+                        className="text-[10px] bg-slate-50 hover:bg-slate-100 text-slate-700 px-3 py-1.5 rounded-lg font-mono border border-slate-200 transition-all cursor-pointer font-bold"
+                      >
+                        /29 (8 IPs)
+                      </button>
+                      <button 
+                        type="button" 
+                        onClick={() => setTarget('8.8.8.8')} 
+                        className="text-[10px] bg-slate-50 hover:bg-slate-100 text-slate-700 px-3 py-1.5 rounded-lg font-mono border border-slate-200 transition-all cursor-pointer font-bold"
+                      >
+                        8.8.8.8 (Single IP)
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => openDelistAppealModal(selectedIP?.ip || target || '')}
+                      className="text-[10px] font-black uppercase tracking-wider text-red-600 hover:text-red-700 hover:bg-red-50 px-2.5 py-1.5 rounded-lg border border-red-200 transition-all flex items-center gap-1.5 cursor-pointer"
                     >
-                      185.190.140.0/28
-                    </button>
-                    <button 
-                      type="button" 
-                      onClick={() => setTarget('8.8.8.8')} 
-                      className="text-[9px] bg-slate-50 hover:bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg font-mono border border-slate-200 transition-all cursor-pointer font-bold"
-                    >
-                      8.8.8.8
-                    </button>
-                    <button 
-                      type="button" 
-                      onClick={() => setTarget('127.0.0.1-5')} 
-                      className="text-[9px] bg-slate-50 hover:bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg font-mono border border-slate-200 transition-all cursor-pointer font-bold"
-                    >
-                      127.0.0.1-5
+                      <Mail className="w-3.5 h-3.5" />
+                      <span>Direct Delist Appeal</span>
                     </button>
                   </div>
 
