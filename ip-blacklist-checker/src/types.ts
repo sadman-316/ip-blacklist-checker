@@ -60,7 +60,40 @@ export interface BlacklistProvider {
   domain: string;
   description: string;
   delistUrl: string;
+  delistEmail?: string;
   category: 'Spam' | 'Malware' | 'Proxy' | 'General' | 'Security' | 'Mail Gateway' | 'Threat Intel' | 'Web Abuse';
+}
+
+export interface DelistRequest {
+  id: string;
+  ip: string;
+  providerId: string;
+  providerName: string;
+  recipientEmail?: string;
+  delistUrl?: string;
+  companyName: string;
+  senderName: string;
+  senderEmail: string;
+  reasonCategory: string;
+  subject: string;
+  message: string;
+  status: 'pending' | 'submitted' | 'under_review' | 'delisted' | 'rejected';
+  submittedAt: string;
+  lastCheckedAt?: string;
+  notes?: string;
+  sendMethod?: 'smtp' | 'client_mailto' | 'web_portal' | 'gmail_web' | 'outlook_web' | 'clipboard';
+}
+
+export interface SMTPSettings {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  pass: string;
+  fromName: string;
+  fromEmail: string;
+  companyName: string;
+  isConfigured?: boolean;
 }
 
 export interface SavedReport {
