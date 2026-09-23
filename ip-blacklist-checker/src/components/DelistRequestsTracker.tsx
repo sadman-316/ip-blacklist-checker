@@ -382,7 +382,21 @@ export function DelistRequestsTracker({
                       {/* Company & Sender */}
                       <td className="py-3 px-4">
                         <span className="font-bold text-slate-900 block">{req.companyName}</span>
-                        <span className="text-[10px] text-slate-500 block">{req.senderName} ({req.senderEmail})</span>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="text-[10px] text-slate-500">{req.senderName}</span>
+                          <span className={`text-[9px] font-black uppercase px-1.5 py-0.2 rounded border ${
+                            req.sendMethod === 'gmail_web' ? 'bg-red-50 text-red-700 border-red-200' :
+                            req.sendMethod === 'outlook_web' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                            req.sendMethod === 'smtp' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                            req.sendMethod === 'web_portal' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                            'bg-slate-100 text-slate-600 border-slate-200'
+                          }`}>
+                            {req.sendMethod === 'gmail_web' ? 'Gmail' :
+                             req.sendMethod === 'outlook_web' ? 'Outlook' :
+                             req.sendMethod === 'smtp' ? 'Server SMTP' :
+                             req.sendMethod === 'web_portal' ? 'Portal' : 'Mail App'}
+                          </span>
+                        </div>
                       </td>
 
                       {/* Reason */}
@@ -493,18 +507,46 @@ export function DelistRequestsTracker({
               </div>
             </div>
 
-            <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center">
-              <button
-                onClick={() => handleCopyAppeal(viewingRequest)}
-                className="px-3.5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-              >
-                {copiedId === viewingRequest.id ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copiedId === viewingRequest.id ? 'Copied' : 'Copy Full Letter'}</span>
-              </button>
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-wrap justify-between items-center gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleCopyAppeal(viewingRequest)}
+                  className="px-3.5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                >
+                  {copiedId === viewingRequest.id ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedId === viewingRequest.id ? 'Copied' : 'Copy Letter'}</span>
+                </button>
+
+                {viewingRequest.recipientEmail && (
+                  <button
+                    onClick={() => {
+                      const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(viewingRequest.recipientEmail || '')}&su=${encodeURIComponent(viewingRequest.subject)}&body=${encodeURIComponent(viewingRequest.message)}`;
+                      window.open(gmailUrl, '_blank', 'noopener,noreferrer');
+                    }}
+                    className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                    title="Open in Gmail"
+                  >
+                    <Mail className="w-3.5 h-3.5" />
+                    <span>Open in Gmail</span>
+                  </button>
+                )}
+
+                {viewingRequest.delistUrl && (
+                  <a
+                    href={viewingRequest.delistUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3 py-2 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <span>Portal</span>
+                    <ExternalLink className="w-3 h-3 text-slate-500" />
+                  </a>
+                )}
+              </div>
 
               <button
                 onClick={() => setViewingRequest(null)}
-                className="px-4 py-2 bg-slate-900 text-white font-bold rounded-xl text-xs cursor-pointer"
+                className="px-4 py-2 bg-slate-900 text-white font-bold rounded-xl text-xs cursor-pointer hover:bg-black transition-colors"
               >
                 Close
               </button>
