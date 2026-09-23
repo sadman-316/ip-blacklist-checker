@@ -1,0 +1,15 @@
+{
+  "watch": [
+    "server.ts"
+  ],
+  "ext": "ts,js",
+  "ignore": [
+    "data/**",
+    "*.json",
+    "*.bak",
+    "*.tmp*",
+    "dist/**",
+    "src/**",
+    "node_modules/**"
+  ]
+}
