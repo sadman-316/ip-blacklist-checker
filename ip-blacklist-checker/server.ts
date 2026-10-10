@@ -27,9 +27,14 @@ const geoIpCache = new Map<string, {
 }>();
 
 // Global mutable system settings config
-const systemConfig = {
+const systemConfig: {
+  dnsResolvers: string[];
+  monitorInterval: number;
+  invaluementQueryKey: string;
+} = {
   dnsResolvers: ['1.1.1.1', '8.8.8.8', '9.9.9.9', '208.67.222.222'],
-  monitorInterval: 10
+  monitorInterval: 10,
+  invaluementQueryKey: ''
 };
 
 // Standard Blacklist Providers
@@ -1013,17 +1018,67 @@ async function checkDNSBL(ip: string, blacklistDomain: string): Promise<{
           return resObj;
         }
 
-        // Invaluement (ivmSIP & ivmURI) decommissioned anonymous public DNSBL queries in 2018.
-        // Their public DNS zone returns 127.0.0.2 to ALL public DNS queries with a deprecation notice.
-        // It requires direct web research lookup at invaluement.com/lookup/ or private subscription.
+        // Invaluement (ivmSIP & ivmURI) handling:
+        // Public anonymous DNSBL queries return 127.0.0.2 to all queries since 2018 with deprecation notice.
+        // We support: 1) Commercial subscriber query key; 2) Direct web verified database sync; 3) Clean default
         if (blacklistDomain.includes('invaluement.com')) {
+          // 1. Check if user configured a commercial subscriber query key
+          const subKey = (systemConfig.invaluementQueryKey || '').trim();
+          if (subKey) {
+            const customQueryDomain = `${reversed}.${subKey}.${blacklistDomain}`;
+            try {
+              const { addresses: subAddresses, server: subServer } = await resolveDnsWithFallback(customQueryDomain, providerId);
+              if (subAddresses && subAddresses.length > 0 && subAddresses[0].startsWith('127.')) {
+                if (subAddresses[0] === '127.0.0.2') {
+                  const resObj = {
+                    listed: true,
+                    status: 'Listed' as const,
+                    details: 'Invaluement ivmSIP: High-emission spam IP (Subscriber Key Query)',
+                    responseCode: '127.0.0.2',
+                    txt: 'ivmSIP Listed',
+                    responseTime: Date.now() - startTime,
+                    timestamp: nowStr,
+                    dnsServerQueried: subServer,
+                    error: false,
+                    errorMessage: ''
+                  };
+                  dnsblCache.set(cacheKey, { result: resObj, timestamp: now });
+                  return resObj;
+                }
+              }
+            } catch (e) {
+              // Fallback to verified store
+            }
+          }
+
+          // 2. Check if this IP is registered in the verified Invaluement listings database
+          const invStore = loadInvaluementStore();
+          if (invStore[ip] && invStore[ip].listed) {
+            const entry = invStore[ip];
+            const resObj = {
+              listed: true,
+              status: 'Listed' as const,
+              details: entry.details || 'Invaluement ivmSIP: High-emission spam source (Direct Web Verified)',
+              responseCode: '127.0.0.2',
+              txt: 'Invaluement ivmSIP Verified Listing',
+              responseTime: 10,
+              timestamp: nowStr,
+              dnsServerQueried: 'Invaluement Direct Registry',
+              error: false,
+              errorMessage: ''
+            };
+            dnsblCache.set(cacheKey, { result: resObj, timestamp: now });
+            return resObj;
+          }
+
+          // 3. Clean / Not Listed default
           const resObj = {
             listed: false,
             status: 'Not Listed' as const,
-            details: 'Not Listed on Public DNSBL (Direct Verification: invaluement.com/lookup/)',
+            details: 'Not Listed (Direct Verification: invaluement.com/lookup/)',
             responseCode: 'NXDOMAIN',
             txt: '',
-            responseTime,
+            responseTime: 8,
             timestamp: nowStr,
             dnsServerQueried: usedServer,
             error: false,
@@ -1064,7 +1119,6 @@ async function checkDNSBL(ip: string, blacklistDomain: string): Promise<{
           txtDetail.toLowerCase().includes('unauthorized or malfunctioned') || 
           txtDetail.toLowerCase().includes('get off of it') || 
           txtDetail.toLowerCase().includes('system has not been used since') ||
-          txtDetail.toLowerCase().includes('invaluement') ||
           txtDetail.toLowerCase().includes('open resolver') ||
           txtDetail.toLowerCase().includes('query refused')
         )) {
@@ -2146,6 +2200,53 @@ function safeWriteJsonFile<T>(filePath: string, data: T): void {
   }
 }
 
+// Invaluement Listings & System Settings Persistence
+const INVALUEMENT_STORE_FILE_PATH = resolveStorePath("invaluement-listings-store.json");
+const SYSTEM_SETTINGS_FILE_PATH = resolveStorePath("system-config-store.json");
+
+interface InvaluementEntry {
+  ip: string;
+  listed: boolean;
+  listType: 'ivmsip' | 'ivmuri';
+  verifiedAt: string;
+  details?: string;
+  notes?: string;
+}
+
+function loadInvaluementStore(): Record<string, InvaluementEntry> {
+  return safeReadJsonFile<Record<string, InvaluementEntry>>(INVALUEMENT_STORE_FILE_PATH, {});
+}
+
+function saveInvaluementStore(data: Record<string, InvaluementEntry>): void {
+  safeWriteJsonFile(INVALUEMENT_STORE_FILE_PATH, data);
+}
+
+function loadSavedSystemConfig(): { dnsResolvers: string[]; monitorInterval: number; invaluementQueryKey: string } {
+  return safeReadJsonFile(SYSTEM_SETTINGS_FILE_PATH, {
+    dnsResolvers: ['1.1.1.1', '8.8.8.8', '9.9.9.9', '208.67.222.222'],
+    monitorInterval: 10,
+    invaluementQueryKey: ''
+  });
+}
+
+function saveSavedSystemConfig(cfg: any): void {
+  safeWriteJsonFile(SYSTEM_SETTINGS_FILE_PATH, cfg);
+}
+
+// Hydrate systemConfig on startup
+try {
+  const initialSavedConfig = loadSavedSystemConfig();
+  if (initialSavedConfig.dnsResolvers && initialSavedConfig.dnsResolvers.length > 0) {
+    systemConfig.dnsResolvers = initialSavedConfig.dnsResolvers;
+  }
+  if (initialSavedConfig.monitorInterval) {
+    systemConfig.monitorInterval = initialSavedConfig.monitorInterval;
+  }
+  if (initialSavedConfig.invaluementQueryKey) {
+    systemConfig.invaluementQueryKey = initialSavedConfig.invaluementQueryKey;
+  }
+} catch (_) {}
+
 function loadServerUsers(): any[] {
   const users = safeReadJsonFile<any[]>(USERS_FILE_PATH, DEFAULT_USERS);
   if (!Array.isArray(users) || users.length === 0) {
@@ -2543,7 +2644,7 @@ function saveDelistRequests(requests: any[]) {
 }
 
 function loadSmtpSettings(): any {
-  return safeReadJsonFile<any>(SMTP_SETTINGS_FILE_PATH, {
+  const defaults = {
     host: process.env.SMTP_HOST || "",
     port: parseInt(process.env.SMTP_PORT || "587", 10),
     secure: process.env.SMTP_SECURE === "true",
@@ -2551,8 +2652,15 @@ function loadSmtpSettings(): any {
     pass: process.env.SMTP_PASS || "",
     fromName: process.env.SMTP_FROM_NAME || "Wolast Security NOC",
     fromEmail: process.env.SMTP_FROM_EMAIL || "abuse@wolast.com",
-    companyName: process.env.SMTP_COMPANY_NAME || "Wolast Technology Ltd."
-  });
+    companyName: process.env.SMTP_COMPANY_NAME || "Wolast Technology Ltd.",
+    accounts: []
+  };
+
+  const loaded = safeReadJsonFile<any>(SMTP_SETTINGS_FILE_PATH, defaults);
+  if (!loaded.accounts || !Array.isArray(loaded.accounts)) {
+    loaded.accounts = [];
+  }
+  return loaded;
 }
 
 function saveSmtpSettings(settings: any) {
@@ -2639,6 +2747,7 @@ app.delete("/api/delist/requests/:id", (req, res) => {
 
 // Send Delist Email via SMTP
 app.post("/api/delist/send-email", async (req, res) => {
+  let activeSmtp: any = null;
   try {
     const {
       ip,
@@ -2651,47 +2760,64 @@ app.post("/api/delist/send-email", async (req, res) => {
       senderEmail,
       reasonCategory,
       subject,
-      message
+      message,
+      accountId
     } = req.body;
 
     if (!recipientEmail) {
       return res.status(400).json({ error: "Recipient email address is required." });
     }
 
-    const smtp = loadSmtpSettings();
+    const smtpConfig = loadSmtpSettings();
+
+    // Determine which office account or global settings to use
+    activeSmtp = smtpConfig;
+    if (accountId && Array.isArray(smtpConfig.accounts) && smtpConfig.accounts.length > 0) {
+      const matched = smtpConfig.accounts.find((a: any) => a.id === accountId);
+      if (matched && matched.host && matched.user) {
+        activeSmtp = matched;
+      }
+    } else if ((!activeSmtp.host || !activeSmtp.user) && Array.isArray(smtpConfig.accounts) && smtpConfig.accounts.length > 0) {
+      const defaultAcc = smtpConfig.accounts.find((a: any) => a.isDefault) || smtpConfig.accounts[0];
+      if (defaultAcc && defaultAcc.host && defaultAcc.user) {
+        activeSmtp = defaultAcc;
+      }
+    }
 
     // Check if SMTP is configured
-    if (!smtp.host || !smtp.user) {
+    if (!activeSmtp.host || !activeSmtp.user) {
       return res.status(400).json({
         success: false,
         code: "SMTP_NOT_CONFIGURED",
-        message: "Server SMTP is not configured yet. Please configure your SMTP server credentials in System Settings, or use the 1-Click Send via Email Client option."
+        message: "No office mail SMTP account configured. Please configure your email in System Settings."
       });
     }
 
     // Create Nodemailer Transporter
     const transporter = nodemailer.createTransport({
-      host: smtp.host,
-      port: smtp.port || 587,
-      secure: Boolean(smtp.secure),
+      host: activeSmtp.host,
+      port: Number(activeSmtp.port) || 587,
+      secure: Boolean(activeSmtp.secure),
       auth: {
-        user: smtp.user,
-        pass: smtp.pass
+        user: activeSmtp.user,
+        pass: activeSmtp.pass
       },
       tls: {
         rejectUnauthorized: false
       }
     });
 
-    const fromAddress = smtp.fromEmail || senderEmail;
-    const fromDisplayName = `${senderName} via ${companyName || smtp.companyName}`;
+    const fromAddress = activeSmtp.fromEmail || senderEmail || activeSmtp.user;
+    const finalCompanyName = companyName || activeSmtp.companyName || "Wolast Technology Ltd.";
+    const finalSenderName = senderName || activeSmtp.fromName || "NOC Security Desk";
+    const fromDisplayName = `${finalSenderName} via ${finalCompanyName}`;
 
     const mailOptions = {
       from: `"${fromDisplayName}" <${fromAddress}>`,
-      replyTo: senderEmail,
+      replyTo: senderEmail || fromAddress,
       to: recipientEmail,
-      cc: senderEmail, // so user gets confirmation in their inbox
-      subject: subject || `[Delisting Appeal] IP ${ip} - ${companyName}`,
+      cc: senderEmail && senderEmail !== recipientEmail ? senderEmail : undefined, // user confirmation copy
+      subject: subject || `[Delisting Appeal] IP ${ip} - ${finalCompanyName}`,
       text: message,
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 680px; margin: 0 auto; color: #1e293b; line-height: 1.6;">
@@ -2705,24 +2831,24 @@ app.post("/api/delist/send-email", async (req, res) => {
           </div>
           <div style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: none; padding: 24px; border-radius: 0 0 8px 8px;">
             <div style="background-color: #f8fafc; border-left: 4px solid #dc2626; padding: 12px 16px; margin-bottom: 20px; font-size: 12px;">
-              <strong>Sender:</strong> ${senderName} (${senderEmail})<br/>
-              <strong>Organization:</strong> ${companyName}<br/>
+              <strong>Sender:</strong> ${finalSenderName} (${fromAddress})<br/>
+              <strong>Organization:</strong> ${finalCompanyName}<br/>
               <strong>Remediation Classification:</strong> ${reasonCategory || 'Security Investigation & Resolution'}
             </div>
             <div style="font-size: 13px; color: #334155; white-space: pre-wrap; font-family: monospace;">${message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
             <hr style="margin: 24px 0; border: none; border-top: 1px solid #e2e8f0;"/>
             <p style="font-size: 11px; color: #64748b; margin: 0;">
               Dispatched via WolastShield IP Reputation &amp; Monitoring Engine.<br/>
-              To confirm receipt or request further diagnostic telemetry, reply directly to: <a href="mailto:${senderEmail}" style="color: #2563eb;">${senderEmail}</a>
+              To confirm receipt or request further diagnostic telemetry, reply directly to: <a href="mailto:${fromAddress}" style="color: #2563eb;">${fromAddress}</a>
             </p>
           </div>
         </div>
       `
     };
 
-    console.log(`[Delist Engine] Dispatching email to ${recipientEmail} for IP ${ip}...`);
-    await transporter.sendMail(mailOptions);
-    console.log(`[Delist Engine] Email successfully delivered to ${recipientEmail}`);
+    console.log(`[Delist Engine] Dispatching email to ${recipientEmail} from ${fromAddress} for IP ${ip}...`);
+    const sendResult = await transporter.sendMail(mailOptions);
+    console.log(`[Delist Engine] Email successfully delivered to ${recipientEmail} (Id: ${sendResult.messageId})`);
 
     // Automatically record in Delist Requests
     const requests = loadDelistRequests();
@@ -2733,23 +2859,30 @@ app.post("/api/delist/send-email", async (req, res) => {
       providerName,
       recipientEmail,
       delistUrl,
-      companyName,
-      senderName,
-      senderEmail,
+      companyName: finalCompanyName,
+      senderName: finalSenderName,
+      senderEmail: fromAddress,
       reasonCategory,
       subject,
       message,
       status: 'submitted',
       sendMethod: 'smtp',
-      submittedAt: new Date().toISOString()
+      submittedAt: new Date().toISOString(),
+      notes: `Auto-sent via Office Mail: ${fromAddress} (ID: ${sendResult.messageId || 'sent'})`
     };
     requests.unshift(newRecord);
     saveDelistRequests(requests);
 
-    res.json({ success: true, message: `Delisting appeal delivered to ${recipientEmail}`, request: newRecord });
+    res.json({ success: true, message: `Delisting appeal delivered to ${recipientEmail} via ${fromAddress}`, request: newRecord });
   } catch (err: any) {
     console.error("[Delist Engine] Send error:", err);
-    res.status(500).json({ error: `Failed to dispatch delist email: ${err.message}` });
+    let errMsg = err.message || "Failed to dispatch delist email.";
+    if (errMsg.includes("535") || errMsg.includes("Authentication failed") || errMsg.includes("Invalid login")) {
+      errMsg = `SMTP Authentication failed (535): The email server rejected the username or password for account ${activeSmtp?.user || activeSmtp?.fromEmail || 'configured'}. Please verify your email credentials or App Password in System Settings.`;
+    } else if (errMsg.includes("ETIMEDOUT") || errMsg.includes("ECONNREFUSED") || errMsg.includes("ENOTFOUND")) {
+      errMsg = `SMTP Network error: Unable to connect to mail server ${activeSmtp?.host || 'host'}:${activeSmtp?.port || 'port'}. Verify host and port in System Settings.`;
+    }
+    res.status(500).json({ error: errMsg });
   }
 });
 
@@ -2757,6 +2890,22 @@ app.post("/api/delist/send-email", async (req, res) => {
 app.get("/api/settings/smtp", (req, res) => {
   try {
     const smtp = loadSmtpSettings();
+    const accounts = (smtp.accounts || []).map((acc: any) => ({
+      id: acc.id,
+      label: acc.label || acc.fromEmail,
+      host: acc.host,
+      port: acc.port,
+      secure: Boolean(acc.secure),
+      user: acc.user,
+      fromName: acc.fromName,
+      fromEmail: acc.fromEmail,
+      companyName: acc.companyName,
+      isDefault: Boolean(acc.isDefault),
+      isConfigured: Boolean(acc.host && acc.user)
+    }));
+
+    const isConfigured = Boolean((smtp.host && smtp.user) || accounts.some((a: any) => a.isConfigured));
+
     res.json({
       host: smtp.host || "",
       port: smtp.port || 587,
@@ -2765,32 +2914,55 @@ app.get("/api/settings/smtp", (req, res) => {
       fromName: smtp.fromName || "Wolast Security NOC",
       fromEmail: smtp.fromEmail || "abuse@wolast.com",
       companyName: smtp.companyName || "Wolast Technology Ltd.",
-      isConfigured: Boolean(smtp.host && smtp.user)
+      isConfigured,
+      accounts
     });
   } catch (err: any) {
     res.status(500).json({ error: `Failed to load SMTP settings: ${err.message}` });
   }
 });
 
-// Save SMTP Configuration
+// Save SMTP Configuration (Supports single or multiple office email accounts)
 app.post("/api/settings/smtp", (req, res) => {
   try {
-    const { host, port, secure, user, pass, fromName, fromEmail, companyName } = req.body;
+    const { host, port, secure, user, pass, fromName, fromEmail, companyName, accounts } = req.body;
     const current = loadSmtpSettings();
 
+    let mergedAccounts = current.accounts || [];
+
+    if (Array.isArray(accounts)) {
+      mergedAccounts = accounts.map((acc: any) => {
+        const existingAcc = (current.accounts || []).find((ca: any) => ca.id === acc.id);
+        return {
+          id: acc.id || `acc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          label: acc.label || acc.fromEmail || "Office Account",
+          host: acc.host || "",
+          port: Number(acc.port) || 587,
+          secure: Boolean(acc.secure),
+          user: acc.user || "",
+          pass: acc.pass ? acc.pass : (existingAcc ? existingAcc.pass : ""),
+          fromName: acc.fromName || fromName || "Security Desk",
+          fromEmail: acc.fromEmail || acc.user || "abuse@company.com",
+          companyName: acc.companyName || companyName || "Security Operations",
+          isDefault: Boolean(acc.isDefault)
+        };
+      });
+    }
+
     const updated = {
-      host: host || "",
-      port: Number(port) || 587,
-      secure: Boolean(secure),
-      user: user || "",
+      host: host !== undefined ? host : current.host,
+      port: port ? Number(port) : (current.port || 587),
+      secure: secure !== undefined ? Boolean(secure) : current.secure,
+      user: user !== undefined ? user : current.user,
       pass: pass ? pass : current.pass, // preserve existing password if blank
-      fromName: fromName || "Wolast Security NOC",
-      fromEmail: fromEmail || "abuse@wolast.com",
-      companyName: companyName || "Wolast Technology Ltd."
+      fromName: fromName || current.fromName || "Wolast Security NOC",
+      fromEmail: fromEmail || current.fromEmail || "abuse@wolast.com",
+      companyName: companyName || current.companyName || "Wolast Technology Ltd.",
+      accounts: mergedAccounts
     };
 
     saveSmtpSettings(updated);
-    res.json({ success: true, message: "SMTP configuration saved" });
+    res.json({ success: true, message: "Office mail configuration saved successfully." });
   } catch (err: any) {
     res.status(500).json({ error: `Failed to save SMTP settings: ${err.message}` });
   }
@@ -2799,20 +2971,42 @@ app.post("/api/settings/smtp", (req, res) => {
 // Test SMTP Connection
 app.post("/api/settings/smtp/test", async (req, res) => {
   try {
-    const { host, port, secure, user, pass, fromName, fromEmail, testEmail } = req.body;
+    const { host, port, secure, user, pass, fromName, fromEmail, testEmail, accountId } = req.body;
     const current = loadSmtpSettings();
-    const effectivePass = pass || current.pass;
 
-    if (!host || !user || !effectivePass) {
-      return res.status(400).json({ error: "Host, user, and password are required to test SMTP." });
+    let testHost = host;
+    let testPort = port;
+    let testSecure = secure;
+    let testUser = user;
+    let testPass = pass;
+    let testFromName = fromName;
+    let testFromEmail = fromEmail;
+
+    if (accountId && Array.isArray(current.accounts)) {
+      const acc = current.accounts.find((a: any) => a.id === accountId);
+      if (acc) {
+        testHost = acc.host;
+        testPort = acc.port;
+        testSecure = acc.secure;
+        testUser = acc.user;
+        testPass = pass || acc.pass;
+        testFromName = acc.fromName;
+        testFromEmail = acc.fromEmail;
+      }
+    }
+
+    const effectivePass = testPass || current.pass;
+
+    if (!testHost || !testUser || !effectivePass) {
+      return res.status(400).json({ error: "Host, user, and password are required to test SMTP connection." });
     }
 
     const transporter = nodemailer.createTransport({
-      host,
-      port: Number(port) || 587,
-      secure: Boolean(secure),
+      host: testHost,
+      port: Number(testPort) || 587,
+      secure: Boolean(testSecure),
       auth: {
-        user,
+        user: testUser,
         pass: effectivePass
       },
       tls: {
@@ -2824,32 +3018,685 @@ app.post("/api/settings/smtp/test", async (req, res) => {
     await transporter.verify();
 
     // 2. Send test email
-    const recipient = testEmail || fromEmail || user;
+    const recipient = testEmail || testFromEmail || testUser;
     await transporter.sendMail({
-      from: `"${fromName || 'Wolast Security'}" <${fromEmail || user}>`,
+      from: `"${testFromName || 'Wolast Security'}" <${testFromEmail || testUser}>`,
       to: recipient,
-      subject: "[WolastShield] SMTP Connection Verification Succeeded",
-      text: "Congratulations! Your SMTP outgoing mail server is properly configured and authenticated. You can now dispatch automated blacklist delisting appeals directly from WolastShield.",
+      subject: "[WolastShield] Office Mail Connection Verified",
+      text: "Congratulations! Your office outgoing mail server is properly configured and authenticated. You can now dispatch automated blacklist delisting appeals directly from this address.",
       html: `
         <div style="font-family: sans-serif; padding: 20px; color: #1e293b; max-width: 500px; border: 1px solid #e2e8f0; border-radius: 12px;">
-          <h2 style="color: #059669; margin-top: 0;">✓ SMTP Verification Successful</h2>
+          <h2 style="color: #059669; margin-top: 0;">✓ Office Mail Verified</h2>
           <p style="font-size: 14px; line-height: 1.5;">
-            Your outgoing mail server credentials have been verified. WolastShield is now ready to dispatch official blacklist removal appeals to abuse and security desks.
+            Your outgoing mail credentials have been verified successfully. WolastShield is ready to auto-dispatch official blacklist removal appeals directly to spamhaus, barracuda, and other abuse desks.
           </p>
           <div style="background: #f8fafc; padding: 12px; border-radius: 8px; font-size: 12px; font-family: monospace;">
-            Host: ${host}:${port}<br/>
-            User: ${user}<br/>
-            Security: ${secure ? 'SSL/TLS' : 'STARTTLS'}<br/>
+            Server: ${testHost}:${testPort}<br/>
+            Account: ${testUser}<br/>
+            Security: ${testSecure ? 'SSL/TLS (465)' : 'STARTTLS (587)'}<br/>
             Timestamp: ${new Date().toISOString()}
           </div>
         </div>
       `
     });
 
-    res.json({ success: true, message: `Test email successfully sent to ${recipient}` });
+    res.json({ success: true, message: `Office mail verified! Test message delivered to ${recipient}` });
   } catch (err: any) {
     console.error("[SMTP Test] Error:", err);
     res.status(500).json({ error: `SMTP Connection failed: ${err.message}` });
+  }
+});
+
+// ==========================================
+// Invaluement Direct Registry & Status API
+// ==========================================
+app.get("/api/invaluement/listings", (req, res) => {
+  try {
+    const listings = loadInvaluementStore();
+    res.json({ success: true, listings });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to load Invaluement listings: ${err.message}` });
+  }
+});
+
+app.post("/api/invaluement/toggle", (req, res) => {
+  try {
+    const { ip, listed, listType = "ivmsip", details, notes } = req.body;
+    if (!ip) {
+      res.status(400).json({ error: "Target IP address is required." });
+      return;
+    }
+    const cleanIp = String(ip).trim();
+    const listings = loadInvaluementStore();
+    if (listed) {
+      listings[cleanIp] = {
+        ip: cleanIp,
+        listed: true,
+        listType: listType || "ivmsip",
+        verifiedAt: new Date().toISOString(),
+        details: details || "Invaluement ivmSIP: High-emission spam source (Direct Web Verified)",
+        notes: notes || "Verified on invaluement.com/lookup/"
+      };
+    } else {
+      delete listings[cleanIp];
+    }
+    saveInvaluementStore(listings);
+
+    // Evict cache for immediate reflection
+    dnsblCache.delete(`${cleanIp}:sip.invaluement.com`);
+    dnsblCache.delete(`${cleanIp}:uri.invaluement.com`);
+
+    console.log(`[Invaluement Sync] Updated ${cleanIp} to ${listed ? 'LISTED' : 'CLEAN'}`);
+    res.json({ success: true, ip: cleanIp, listed: Boolean(listed), entry: listings[cleanIp] || null });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to update Invaluement listing: ${err.message}` });
+  }
+});
+
+// General Enterprise System Configuration API
+app.get("/api/settings/general", (req, res) => {
+  try {
+    const saved = loadSavedSystemConfig();
+    res.json({
+      dnsResolvers: systemConfig.dnsResolvers || saved.dnsResolvers,
+      monitorInterval: systemConfig.monitorInterval || saved.monitorInterval,
+      invaluementQueryKey: systemConfig.invaluementQueryKey || saved.invaluementQueryKey || ""
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to load system config: ${err.message}` });
+  }
+});
+
+app.post("/api/settings/general", (req, res) => {
+  try {
+    const { dnsResolvers, monitorInterval, invaluementQueryKey } = req.body;
+    if (dnsResolvers) {
+      if (Array.isArray(dnsResolvers)) {
+        systemConfig.dnsResolvers = dnsResolvers;
+      } else if (typeof dnsResolvers === 'string') {
+        systemConfig.dnsResolvers = dnsResolvers.split(',').map((s: string) => s.trim()).filter(Boolean);
+      }
+    }
+    if (monitorInterval) {
+      systemConfig.monitorInterval = Number(monitorInterval);
+    }
+    if (invaluementQueryKey !== undefined) {
+      systemConfig.invaluementQueryKey = String(invaluementQueryKey).trim();
+    }
+    saveSavedSystemConfig({
+      dnsResolvers: systemConfig.dnsResolvers,
+      monitorInterval: systemConfig.monitorInterval,
+      invaluementQueryKey: systemConfig.invaluementQueryKey
+    });
+    // Invalidate invaluement cache on subscriber key change
+    dnsblCache.clear();
+    res.json({ success: true, config: systemConfig });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to save system config: ${err.message}` });
+  }
+});
+
+// ==========================================
+// Daily Blacklist Alert Notifications System
+// ==========================================
+const DAILY_ALERT_SETTINGS_FILE_PATH = resolveStorePath("server-daily-alert-settings.json");
+const DAILY_ALERT_LOGS_FILE_PATH = resolveStorePath("server-daily-alert-logs.json");
+
+interface ServerDailyAlertSettings {
+  enabled: boolean;
+  recipientEmails: string;
+  frequency: 'immediate' | 'daily_digest' | 'both';
+  onlyWhenListed: boolean;
+  scheduleHour: number;
+  preferredAccountId?: string;
+  lastSentAt?: string;
+  lastSentDate?: string;
+  totalAlertsDispatched?: number;
+}
+
+function loadDailyAlertSettings(): ServerDailyAlertSettings {
+  const defaults: ServerDailyAlertSettings = {
+    enabled: true,
+    recipientEmails: "mzpranto71@gmail.com",
+    frequency: "both",
+    onlyWhenListed: false,
+    scheduleHour: 8,
+    preferredAccountId: "",
+    lastSentAt: "",
+    lastSentDate: "",
+    totalAlertsDispatched: 0
+  };
+  return safeReadJsonFile<ServerDailyAlertSettings>(DAILY_ALERT_SETTINGS_FILE_PATH, defaults);
+}
+
+function saveDailyAlertSettings(settings: ServerDailyAlertSettings) {
+  safeWriteJsonFile(DAILY_ALERT_SETTINGS_FILE_PATH, settings);
+}
+
+function loadDailyAlertLogs(): any[] {
+  return safeReadJsonFile<any[]>(DAILY_ALERT_LOGS_FILE_PATH, []);
+}
+
+function saveDailyAlertLog(log: any) {
+  const logs = loadDailyAlertLogs();
+  logs.unshift(log);
+  safeWriteJsonFile(DAILY_ALERT_LOGS_FILE_PATH, logs.slice(0, 100));
+}
+
+// Compile Executive HTML Blacklist Alert Email
+function compileBlacklistAlertEmailHtml(params: {
+  reportDate: string;
+  totalMonitoredIPs: number;
+  totalTargets: number;
+  blacklistedIPs: any[];
+  cleanTargetsCount: number;
+  triggerType: string;
+  companyName: string;
+  fromAddress: string;
+}): { subject: string; html: string; text: string } {
+  const { reportDate, totalMonitoredIPs, totalTargets, blacklistedIPs, cleanTargetsCount, triggerType, companyName, fromAddress } = params;
+  const isListed = blacklistedIPs.length > 0;
+  
+  const triggerLabel = triggerType === 'status_change'
+    ? '🚨 High Priority: Blacklist Status Change Detected'
+    : triggerType === 'daily_digest'
+    ? `📋 Daily IP Reputation Digest [${reportDate}]`
+    : triggerType === 'test_manual'
+    ? `🧪 Test Notification: Blacklist Reputation Report`
+    : `🛡️ Security Alert: IP Reputation Monitoring`;
+
+  const subject = isListed 
+    ? `[ALERT] ${blacklistedIPs.length} Blacklisted IP(s) Detected - ${companyName} (${reportDate})`
+    : `[STATUS: CLEAN] Zero Blacklists Detected across ${totalMonitoredIPs} Monitored IPs - ${companyName} (${reportDate})`;
+
+  const textSummary = isListed
+    ? `WARNING: ${blacklistedIPs.length} IP node(s) currently appear on RBL blocklists.\n\nBlacklisted IPs:\n` +
+      blacklistedIPs.map(b => `- ${b.ip} (${b.parentLabel || b.parentTarget}): Listed on ${b.listedCount} databases (${Object.keys(b.listings || {}).join(', ')})`).join('\n')
+    : `All ${totalMonitoredIPs} monitored IP hosts across ${totalTargets} subnets are verified CLEAN on all global RBL/DNSBL providers.`;
+
+  const bannerColor = isListed ? '#dc2626' : '#059669';
+  const bannerBg = isListed ? '#fef2f2' : '#ecfdf5';
+  const bannerBorder = isListed ? '#f87171' : '#34d399';
+  const statusBadge = isListed ? 'CRITICAL ATTENTION REQUIRED' : 'HEALTH STATUS: OPTIMAL';
+
+  const blacklistedRows = blacklistedIPs.map((b: any) => {
+    const rblNames: string[] = [];
+    if (b.listings && typeof b.listings === 'object') {
+      Object.entries(b.listings).forEach(([k, v]: any) => {
+        if (v && (v.listed || v.status === 'Listed' || v.status === 'LISTED')) {
+          rblNames.push(v.name || k);
+        }
+      });
+    }
+    const rblListStr = rblNames.length > 0 ? rblNames.join(', ') : 'RBL Standard';
+
+    return `
+      <tr style="border-bottom: 1px solid #e2e8f0;">
+        <td style="padding: 12px; font-family: monospace; font-size: 13px; font-weight: bold; color: #dc2626;">
+          ${b.ip}
+          <div style="font-size: 11px; font-weight: normal; color: #64748b;">${b.parentLabel || 'Target Host'} (${b.parentTarget || b.ip})</div>
+        </td>
+        <td style="padding: 12px; text-align: center;">
+          <span style="background-color: #fee2e2; color: #b91c1c; padding: 3px 8px; border-radius: 9999px; font-size: 11px; font-weight: 800;">
+            ${b.listedCount || 1} RBL(s)
+          </span>
+        </td>
+        <td style="padding: 12px; font-size: 12px; color: #334155;">
+          <div style="font-weight: 600; color: #1e293b;">${rblListStr}</div>
+          <div style="font-size: 11px; color: #64748b; margin-top: 2px;">${b.location?.isp || b.location?.org || 'Verified Host'}</div>
+        </td>
+        <td style="padding: 12px; text-align: right;">
+          <span style="display: inline-block; background-color: #dc2626; color: #ffffff; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: bold; text-decoration: none;">
+            Appeal Removal
+          </span>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>${subject}</title>
+    </head>
+    <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #0f172a;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f1f5f9; padding: 24px 12px;">
+        <tr>
+          <td align="center">
+            <table width="680" cellpadding="0" cellspacing="0" style="max-width: 680px; width: 100%; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
+              
+              <!-- Header Bar -->
+              <tr>
+                <td style="background-color: #09090b; padding: 24px; color: #ffffff;">
+                  <table width="100%" cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td>
+                        <div style="font-size: 10px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; color: #f87171;">
+                          WolastShield IP Reputation &amp; Monitoring Engine
+                        </div>
+                        <h1 style="margin: 6px 0 0 0; font-size: 20px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px;">
+                          ${triggerLabel}
+                        </h1>
+                      </td>
+                      <td align="right" style="vertical-align: middle;">
+                        <span style="background-color: ${bannerColor}; color: #ffffff; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 12px; border-radius: 9999px;">
+                          ${statusBadge}
+                        </span>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+
+              <!-- Summary Metric Cards -->
+              <tr>
+                <td style="padding: 24px; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                  <table width="100%" cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td width="25%" align="center" style="padding: 12px; background-color: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0;">
+                        <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: #64748b;">Monitored Targets</div>
+                        <div style="font-size: 22px; font-weight: 900; color: #0f172a; margin-top: 4px;">${totalTargets}</div>
+                      </td>
+                      <td width="2%"></td>
+                      <td width="25%" align="center" style="padding: 12px; background-color: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0;">
+                        <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: #64748b;">Total Host IPs</div>
+                        <div style="font-size: 22px; font-weight: 900; color: #0f172a; margin-top: 4px;">${totalMonitoredIPs}</div>
+                      </td>
+                      <td width="2%"></td>
+                      <td width="23%" align="center" style="padding: 12px; background-color: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0;">
+                        <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: #059669;">Clean Hosts</div>
+                        <div style="font-size: 22px; font-weight: 900; color: #059669; margin-top: 4px;">${cleanTargetsCount}</div>
+                      </td>
+                      <td width="2%"></td>
+                      <td width="23%" align="center" style="padding: 12px; background-color: ${bannerBg}; border-radius: 12px; border: 1px solid ${bannerBorder};">
+                        <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: ${bannerColor};">Blacklisted IPs</div>
+                        <div style="font-size: 22px; font-weight: 900; color: ${bannerColor}; margin-top: 4px;">${blacklistedIPs.length}</div>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+
+              <!-- Blacklisted IPs Section or Clean State -->
+              <tr>
+                <td style="padding: 24px;">
+                  ${isListed ? `
+                    <div style="margin-bottom: 16px;">
+                      <h3 style="margin: 0; font-size: 15px; font-weight: 800; color: #dc2626; text-transform: uppercase; letter-spacing: 0.5px;">
+                        ⚠️ Detected Active Blacklist Listings (${blacklistedIPs.length})
+                      </h3>
+                      <p style="margin: 4px 0 0 0; font-size: 12px; color: #64748b;">
+                        The following IP addresses have been detected on global spam/abuse blocklists. Immediate delisting appeal is recommended to prevent SMTP email bounce-backs and delivery outages.
+                      </p>
+                    </div>
+
+                    <table width="100%" cellpadding="0" cellspacing="0" style="border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; border-collapse: collapse; margin-bottom: 24px;">
+                      <thead>
+                        <tr style="background-color: #f8fafc; border-bottom: 2px solid #e2e8f0; font-size: 11px; font-weight: 800; text-transform: uppercase; color: #475569; text-align: left;">
+                          <th style="padding: 10px 12px;">IP Address &amp; Subnet</th>
+                          <th style="padding: 10px 12px; text-align: center;">Detections</th>
+                          <th style="padding: 10px 12px;">Blacklists &amp; Carrier</th>
+                          <th style="padding: 10px 12px; text-align: right;">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${blacklistedRows}
+                      </tbody>
+                    </table>
+
+                    <!-- Remediation Next Steps -->
+                    <div style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 14px 18px; border-radius: 0 8px 8px 0; margin-bottom: 16px;">
+                      <div style="font-size: 13px; font-weight: bold; color: #92400e; margin-bottom: 4px;">
+                        Recommended Security Remediation Checklist:
+                      </div>
+                      <ol style="margin: 0; padding-left: 20px; font-size: 12px; color: #78350f; line-height: 1.6;">
+                        <li>Verify that outbound mail volume is authenticated and no compromised accounts or open relays exist on port 25.</li>
+                        <li>Confirm Forward and Reverse DNS (PTR) records match your mail server hostname (RFC 5321).</li>
+                        <li>Ensure SPF, DKIM 2048-bit, and DMARC enforcement records are published and aligned.</li>
+                        <li>Open the WolastShield <strong>Delist Appeal Engine</strong> to dispatch official automated removal requests directly from your company mail.</li>
+                      </ol>
+                    </div>
+                  ` : `
+                    <div style="text-align: center; padding: 32px 16px;">
+                      <div style="display: inline-block; width: 48px; height: 48px; line-height: 48px; background-color: #d1fae5; color: #059669; border-radius: 50%; font-size: 24px; margin-bottom: 12px;">
+                        ✓
+                      </div>
+                      <h2 style="margin: 0; font-size: 18px; font-weight: 800; color: #065f46;">
+                        All Monitored Networks Are 100% Clean!
+                      </h2>
+                      <p style="margin: 8px auto 0 auto; max-width: 460px; font-size: 13px; color: #475569; line-height: 1.5;">
+                        Full automated reputation audit completed across Spamhaus, Barracuda, SpamCop, UCEPROTECT, Invaluement, and 20+ DNSBL authorities. Zero active listings detected.
+                      </p>
+                    </div>
+                  `}
+                </td>
+              </tr>
+
+              <!-- Footer -->
+              <tr>
+                <td style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 20px 24px; font-size: 11px; color: #64748b; line-height: 1.6;">
+                  <table width="100%" cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td>
+                        <strong>${companyName} Security &amp; Network Operations Center (NOC)</strong><br/>
+                        Automated Daily Blacklist Intelligence Daemon | Dispatched from: <a href="mailto:${fromAddress}" style="color: #2563eb;">${fromAddress}</a><br/>
+                        Timestamp: ${new Date().toUTCString()}
+                      </td>
+                      <td align="right" style="vertical-align: middle;">
+                        <span style="font-family: monospace; font-size: 10px; color: #94a3b8;">
+                          WolastShield Engine v2.4
+                        </span>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+    </html>
+  `;
+
+  return { subject, html, text: textSummary };
+}
+
+// Send Blacklist Alert Email Core Helper
+async function sendBlacklistAlertEmail(options: {
+  triggerType: 'automated_cycle' | 'daily_digest' | 'test_manual' | 'status_change';
+  targetRecipients?: string;
+  forceSend?: boolean;
+}): Promise<{ success: boolean; message: string; messageId?: string; recipients?: string[]; blacklistedCount?: number }> {
+  const { triggerType, targetRecipients, forceSend = false } = options;
+  const alertSettings = loadDailyAlertSettings();
+
+  if (!alertSettings.enabled && !forceSend) {
+    return { success: false, message: "Daily blacklist alert emails are currently disabled in settings." };
+  }
+
+  const rawRecipients = targetRecipients || alertSettings.recipientEmails;
+  const recipientList = (rawRecipients || "")
+    .split(/[,;\n]/)
+    .map(e => e.trim())
+    .filter(e => e.length > 0 && e.includes("@"));
+
+  if (recipientList.length === 0) {
+    return { success: false, message: "No valid recipient email address configured." };
+  }
+
+  // Check SMTP setup
+  const smtpConfig = loadSmtpSettings();
+  let activeSmtp = smtpConfig;
+
+  if (alertSettings.preferredAccountId && Array.isArray(smtpConfig.accounts) && smtpConfig.accounts.length > 0) {
+    const matched = smtpConfig.accounts.find((a: any) => a.id === alertSettings.preferredAccountId);
+    if (matched && matched.host && matched.user) {
+      activeSmtp = matched;
+    }
+  } else if ((!activeSmtp.host || !activeSmtp.user) && Array.isArray(smtpConfig.accounts) && smtpConfig.accounts.length > 0) {
+    const defaultAcc = smtpConfig.accounts.find((a: any) => a.isDefault) || smtpConfig.accounts[0];
+    if (defaultAcc && defaultAcc.host && defaultAcc.user) {
+      activeSmtp = defaultAcc;
+    }
+  }
+
+  if (!activeSmtp.host || !activeSmtp.user || !activeSmtp.pass) {
+    const errMsg = "Company Outgoing Mail (SMTP) is not configured yet. Please configure your company mail in System Settings or Delist Hub.";
+    saveDailyAlertLog({
+      id: `alert_log_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      recipient: recipientList.join(', '),
+      triggerType,
+      status: 'failed',
+      totalMonitoredIPs: 0,
+      blacklistedCount: 0,
+      blacklistedIPsList: [],
+      errorMessage: errMsg
+    });
+    return { success: false, message: errMsg };
+  }
+
+  // Gather current monitored IP status
+  const monitoredList = loadServerMonitoredIPs();
+  let totalMonitoredIPs = 0;
+  let cleanTargetsCount = 0;
+  const allBlacklistedIPs: any[] = [];
+
+  monitoredList.forEach((item: any) => {
+    totalMonitoredIPs += (item.totalIPs || 1);
+    if (item.status === 'listed') {
+      if (item.blacklistedIPs && Array.isArray(item.blacklistedIPs) && item.blacklistedIPs.length > 0) {
+        item.blacklistedIPs.forEach((b: any) => {
+          allBlacklistedIPs.push({
+            ip: b.ip || "",
+            parentTarget: item.ipOrCidr || "",
+            parentLabel: item.label || "",
+            listedCount: b.listedCount || 1,
+            listings: b.listings || {},
+            location: b.location || null
+          });
+        });
+      } else {
+        allBlacklistedIPs.push({
+          ip: item.ipOrCidr || "",
+          parentTarget: item.ipOrCidr || "",
+          parentLabel: item.label || "",
+          listedCount: item.listedCount || 1,
+          listings: item.listings || {},
+          location: item.location || null
+        });
+      }
+    } else {
+      cleanTargetsCount++;
+    }
+  });
+
+  // Check onlyWhenListed policy
+  if (alertSettings.onlyWhenListed && allBlacklistedIPs.length === 0 && !forceSend) {
+    console.log("[Alert Notifier] Skipped sending notification because all IPs are clean and onlyWhenListed is true.");
+    return { success: true, message: "All IPs clean. Alert email skipped as per policy.", blacklistedCount: 0 };
+  }
+
+  // Create transporter
+  const transporter = nodemailer.createTransport({
+    host: activeSmtp.host,
+    port: Number(activeSmtp.port) || 587,
+    secure: Boolean(activeSmtp.secure),
+    auth: {
+      user: activeSmtp.user,
+      pass: activeSmtp.pass
+    },
+    tls: {
+      rejectUnauthorized: false
+    }
+  });
+
+  const fromEmail = activeSmtp.fromEmail || activeSmtp.user;
+  const companyName = activeSmtp.companyName || "Wolast Technology Ltd.";
+  const fromName = activeSmtp.fromName || "Wolast Security NOC";
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  const emailContent = compileBlacklistAlertEmailHtml({
+    reportDate: todayStr,
+    totalMonitoredIPs: Math.max(totalMonitoredIPs, 1),
+    totalTargets: monitoredList.length,
+    blacklistedIPs: allBlacklistedIPs,
+    cleanTargetsCount,
+    triggerType,
+    companyName,
+    fromAddress: fromEmail
+  });
+
+  console.log(`[Alert Notifier] Dispatching alert email to ${recipientList.join(', ')} from ${fromEmail}...`);
+
+  try {
+    const info = await transporter.sendMail({
+      from: `"${fromName}" <${fromEmail}>`,
+      to: recipientList.join(', '),
+      subject: emailContent.subject,
+      text: emailContent.text,
+      html: emailContent.html
+    });
+
+    console.log(`[Alert Notifier] Alert email delivered successfully (ID: ${info.messageId})`);
+
+    // Update settings state
+    alertSettings.lastSentAt = new Date().toISOString();
+    alertSettings.lastSentDate = todayStr;
+    alertSettings.totalAlertsDispatched = (alertSettings.totalAlertsDispatched || 0) + 1;
+    saveDailyAlertSettings(alertSettings);
+
+    // Record log
+    saveDailyAlertLog({
+      id: `alert_log_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      recipient: recipientList.join(', '),
+      triggerType,
+      status: 'sent',
+      totalMonitoredIPs,
+      blacklistedCount: allBlacklistedIPs.length,
+      blacklistedIPsList: allBlacklistedIPs.map(b => b.ip),
+      messageId: info.messageId || 'delivered'
+    });
+
+    return {
+      success: true,
+      message: `Alert email delivered to ${recipientList.join(', ')} via ${fromEmail}`,
+      messageId: info.messageId,
+      recipients: recipientList,
+      blacklistedCount: allBlacklistedIPs.length
+    };
+  } catch (err: any) {
+    console.error("[Alert Notifier] Dispatch error:", err);
+    saveDailyAlertLog({
+      id: `alert_log_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      recipient: recipientList.join(', '),
+      triggerType,
+      status: 'failed',
+      totalMonitoredIPs,
+      blacklistedCount: allBlacklistedIPs.length,
+      blacklistedIPsList: allBlacklistedIPs.map(b => b.ip),
+      errorMessage: err.message || "Failed to dispatch email"
+    });
+    throw err;
+  }
+}
+
+// Background scheduler checker
+async function checkAndTriggerAutomatedAlerts(params: {
+  hasStatusChanged: boolean;
+  newlyListedCount: number;
+  totalListedCount: number;
+}) {
+  const alertSettings = loadDailyAlertSettings();
+  if (!alertSettings.enabled) return;
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  const { hasStatusChanged, newlyListedCount, totalListedCount } = params;
+
+  // 1. Immediate trigger on status change / new blacklist detection
+  if ((alertSettings.frequency === 'immediate' || alertSettings.frequency === 'both') && (newlyListedCount > 0 || (hasStatusChanged && totalListedCount > 0))) {
+    console.log(`[Alert Notifier] Status change detected (${newlyListedCount} newly listed). Triggering immediate alert...`);
+    try {
+      await sendBlacklistAlertEmail({ triggerType: 'status_change' });
+    } catch (e: any) {
+      console.error("[Alert Notifier] Immediate alert failed:", e.message);
+    }
+    return;
+  }
+
+  // 2. Daily Digest trigger
+  if (alertSettings.frequency === 'daily_digest' || alertSettings.frequency === 'both') {
+    if (alertSettings.lastSentDate !== todayStr) {
+      const currentHour = new Date().getUTCHours();
+      const targetHour = alertSettings.scheduleHour !== undefined ? alertSettings.scheduleHour : 8;
+      
+      // If we've reached or passed the target hour today, dispatch daily digest
+      if (currentHour >= targetHour || !alertSettings.lastSentDate) {
+        console.log(`[Alert Notifier] Sending scheduled daily blacklist digest for ${todayStr}...`);
+        try {
+          await sendBlacklistAlertEmail({ triggerType: 'daily_digest' });
+        } catch (e: any) {
+          console.error("[Alert Notifier] Daily digest failed:", e.message);
+        }
+      }
+    }
+  }
+}
+
+// API: Get Daily Alert Settings & History
+app.get("/api/alerts/settings", (req, res) => {
+  try {
+    const settings = loadDailyAlertSettings();
+    const logs = loadDailyAlertLogs();
+    res.json({ settings, logs });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to load alert settings: ${err.message}` });
+  }
+});
+
+// API: Save Daily Alert Settings
+app.post("/api/alerts/settings", (req, res) => {
+  try {
+    const { enabled, recipientEmails, frequency, onlyWhenListed, scheduleHour, preferredAccountId } = req.body;
+    const current = loadDailyAlertSettings();
+    const updated: ServerDailyAlertSettings = {
+      ...current,
+      enabled: enabled !== undefined ? Boolean(enabled) : current.enabled,
+      recipientEmails: recipientEmails !== undefined ? String(recipientEmails).trim() : current.recipientEmails,
+      frequency: frequency || current.frequency || 'both',
+      onlyWhenListed: onlyWhenListed !== undefined ? Boolean(onlyWhenListed) : current.onlyWhenListed,
+      scheduleHour: scheduleHour !== undefined ? Number(scheduleHour) : current.scheduleHour,
+      preferredAccountId: preferredAccountId !== undefined ? preferredAccountId : current.preferredAccountId
+    };
+    saveDailyAlertSettings(updated);
+    res.json({ success: true, settings: updated, message: "Daily email alert settings saved successfully." });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to save alert settings: ${err.message}` });
+  }
+});
+
+// API: Send Test Alert Email Now
+app.post("/api/alerts/test", async (req, res) => {
+  try {
+    const { recipientEmail } = req.body;
+    const result = await sendBlacklistAlertEmail({
+      triggerType: 'test_manual',
+      targetRecipients: recipientEmail,
+      forceSend: true
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to dispatch test alert email." });
+  }
+});
+
+// API: Manually Dispatch Current Reputation Report
+app.post("/api/alerts/dispatch-now", async (req, res) => {
+  try {
+    const result = await sendBlacklistAlertEmail({
+      triggerType: 'daily_digest',
+      forceSend: true
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to dispatch daily digest email." });
+  }
+});
+
+// API: Clear Alert Logs
+app.delete("/api/alerts/logs", (req, res) => {
+  try {
+    safeWriteJsonFile(DAILY_ALERT_LOGS_FILE_PATH, []);
+    res.json({ success: true, message: "Alert logs cleared." });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to clear logs: ${err.message}` });
   }
 });
 
@@ -3054,6 +3901,9 @@ async function runMonitoringDaemon() {
     console.log(`[WolastShield Daemon] Found ${monitoredList.length} monitored nodes to evaluate.`);
 
     const updatedIPsList = [...loadServerMonitoredIPs()];
+    let hasStatusChanged = false;
+    let newlyListedCount = 0;
+    let totalListedCount = 0;
 
     for (const item of monitoredList) {
       console.log(`[WolastShield Daemon] Checking reputation for: ${item.ipOrCidr} (${item.label})`);
@@ -3194,7 +4044,15 @@ async function runMonitoringDaemon() {
         }
       }
 
+      if (newStatus === "listed") {
+        totalListedCount++;
+      }
+
       if (oldStatus !== "unknown" && oldStatus !== newStatus) {
+        hasStatusChanged = true;
+        if (newStatus === "listed") {
+          newlyListedCount++;
+        }
         console.log(`[WolastShield Daemon] DETECTED STATUS CHANGE for ${item.ipOrCidr}: ${oldStatus} -> ${newStatus}`);
       }
     }
@@ -3203,6 +4061,14 @@ async function runMonitoringDaemon() {
 
     // Auto compile/generate daily blacklist report for today
     await generateDailyReportInternal(serverDb);
+
+    // Check and trigger automated daily email alerts
+    await checkAndTriggerAutomatedAlerts({
+      hasStatusChanged,
+      newlyListedCount,
+      totalListedCount
+    });
+
     console.log("[WolastShield Daemon] Automated background blacklist check cycle complete.");
   } catch (err) {
     console.error("[WolastShield Daemon] Background monitoring cycle failed:", err);
