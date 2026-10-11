@@ -22,6 +22,7 @@ import { UserManagement } from './components/UserManagement';
 import { SystemSettings } from './components/SystemSettings';
 import { DelistRequestModal } from './components/DelistRequestModal';
 import { DelistRequestsTracker } from './components/DelistRequestsTracker';
+import { DailyEmailAlerts } from './components/DailyEmailAlerts';
 import { COMPANY_CREDENTIALS } from './company-credentials';
 
 // Static Full Reputation & Blacklist Providers list for UI rendering & reference
@@ -769,10 +770,10 @@ export default function App() {
   const [archiveConfirmDeleteId, setArchiveConfirmDeleteId] = useState<string | null>(null);
 
   // Navigation & Filtering
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'monitoring' | 'guides' | 'providers' | 'history' | 'users' | 'settings'>(() => {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'monitoring' | 'alerts' | 'appeals' | 'guides' | 'providers' | 'history' | 'users' | 'settings'>(() => {
     try {
       const saved = localStorage.getItem('wolast_active_tab');
-      if (saved && ['dashboard', 'monitoring', 'guides', 'providers', 'history', 'users', 'settings'].includes(saved)) {
+      if (saved && ['dashboard', 'monitoring', 'alerts', 'appeals', 'guides', 'providers', 'history', 'users', 'settings'].includes(saved)) {
         return saved as any;
       }
     } catch {}
@@ -872,6 +873,83 @@ export default function App() {
       initialProviderId: specificProviderId || (listed.length > 0 ? listed[0].id : 'spamhaus')
     });
     setDelistModalOpen(true);
+  };
+
+  // Toggle Invaluement ivmSIP/ivmURI listing state
+  const handleToggleInvaluementListing = async (targetIp: string, listed: boolean) => {
+    try {
+      const res = await fetch("/api/invaluement/toggle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ip: targetIp,
+          listed,
+          listType: "ivmsip",
+          details: "Invaluement ivmSIP: High-emission spam source (Direct Web Verified)"
+        })
+      });
+      if (!res.ok) throw new Error("Failed to update Invaluement status");
+
+      if (selectedIP && selectedIP.ip === targetIp) {
+        const updatedListings = { ...selectedIP.listings };
+        if (listed) {
+          updatedListings['ivmsip'] = {
+            listed: true,
+            status: 'Listed',
+            details: 'Invaluement ivmSIP: High-emission spam source (Direct Web Verified)',
+            responseCode: '127.0.0.2',
+            txt: 'ivmSIP Verified Listing',
+            responseTime: 10,
+            timestamp: new Date().toISOString(),
+            dnsServerQueried: 'Invaluement Registry',
+            evidenceUrl: 'https://www.invaluement.com/lookup/'
+          };
+        } else {
+          updatedListings['ivmsip'] = {
+            listed: false,
+            status: 'Not Listed',
+            details: 'Not Listed (Direct Verification: invaluement.com/lookup/)',
+            responseCode: 'NXDOMAIN',
+            txt: '',
+            responseTime: 8,
+            timestamp: new Date().toISOString(),
+            dnsServerQueried: 'System DNS',
+            evidenceUrl: 'https://www.invaluement.com/lookup/'
+          };
+        }
+
+        const activeListedCount = Object.values(updatedListings).filter((l: any) => l && (l.listed || l.status === 'Listed' || l.status === 'LISTED')).length;
+        const updatedSelected = {
+          ...selectedIP,
+          listings: updatedListings,
+          listedCount: activeListedCount,
+          status: activeListedCount > 0 ? ('listed' as const) : ('clean' as const)
+        };
+        setSelectedIP(updatedSelected);
+        if (report && report.results) {
+          const updatedResults = report.results.map(item => item.ip === targetIp ? updatedSelected : item);
+          const updatedReport = {
+            ...report,
+            results: updatedResults,
+            blacklistedCount: updatedResults.filter(r => r.status === 'listed').length,
+            cleanCount: updatedResults.filter(r => r.status === 'clean').length
+          };
+          setReport(updatedReport);
+          try {
+            localStorage.setItem('wolast_current_report', JSON.stringify(updatedReport));
+          } catch (_) {}
+        }
+      }
+
+      triggerAlert(
+        "success",
+        listed
+          ? `✓ IP ${targetIp} is now marked as LISTED on Invaluement ivmSIP (Reflected in reports & alerts).`
+          : `✓ IP ${targetIp} is now marked as CLEAN on Invaluement ivmSIP.`
+      );
+    } catch (err: any) {
+      triggerAlert("error", err.message || "Failed to update Invaluement status");
+    }
   };
 
   // Restore last active scan report if saved locally
@@ -1537,6 +1615,15 @@ export default function App() {
               }`}
             >
               IP Monitoring
+            </button>
+            <button 
+              onClick={() => setActiveTab('alerts')}
+              className={`pb-1 transition-all cursor-pointer flex items-center gap-1.5 border-b-2 ${
+                activeTab === 'alerts' ? 'text-red-500 border-red-500 font-extrabold' : 'border-transparent hover:text-white'
+              }`}
+            >
+              <Bell className="w-3.5 h-3.5 text-red-500" />
+              <span>Daily Alerts</span>
             </button>
             <button 
               onClick={() => setActiveTab('appeals')}
@@ -2505,6 +2592,29 @@ export default function App() {
                                       </td>
                                       <td className="py-3 px-4 text-right">
                                         <div className="flex items-center justify-end gap-1.5">
+                                          {/* Invaluement ivmSIP / ivmURI Direct Verification & Sync Controls */}
+                                          {(provider.id === 'ivmsip' || provider.id === 'ivmuri') && (
+                                            isListed ? (
+                                              <button
+                                                onClick={() => handleToggleInvaluementListing(selectedIP.ip, false)}
+                                                className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded text-[10px] font-black uppercase transition-all flex items-center gap-1 cursor-pointer border border-emerald-200"
+                                                title="Mark this IP as verified clean on Invaluement ivmSIP"
+                                              >
+                                                <Check className="w-2.5 h-2.5 text-emerald-600" />
+                                                Mark Clean
+                                              </button>
+                                            ) : (
+                                              <button
+                                                onClick={() => handleToggleInvaluementListing(selectedIP.ip, true)}
+                                                className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded text-[10px] font-black uppercase transition-all flex items-center gap-1 cursor-pointer border border-rose-200"
+                                                title="Mark as listed on Invaluement ivmSIP if verified on invaluement.com/lookup/"
+                                              >
+                                                <AlertTriangle className="w-2.5 h-2.5 text-rose-600" />
+                                                Flag Listed
+                                              </button>
+                                            )
+                                          )}
+
                                           {isListed && (
                                             <>
                                               <button
@@ -2639,6 +2749,18 @@ export default function App() {
             onOpenDelistAppeal={(targetIP?: string, providerId?: string) => {
               openDelistAppealModal(targetIP || '', providerId);
             }} 
+          />
+        )}
+
+        {/* TAB 1.7: DAILY EMAIL ALERTS & NOTIFICATIONS */}
+        {activeTab === 'alerts' && (
+          <DailyEmailAlerts
+            currentUser={userProfile}
+            triggerAlert={triggerAlert}
+            onOpenDelistAppeal={(targetIP?: string, providerId?: string) => {
+              openDelistAppealModal(targetIP || selectedIP?.ip || '', providerId);
+            }}
+            onNavigateToSettings={() => setActiveTab('settings')}
           />
         )}
 
