@@ -84,6 +84,20 @@ export interface DelistRequest {
   sendMethod?: 'smtp' | 'client_mailto' | 'web_portal' | 'gmail_web' | 'outlook_web' | 'clipboard';
 }
 
+export interface OfficeMailAccount {
+  id: string;
+  label: string; // e.g., 'Primary Abuse Desk', 'NOC Operations', 'Security Postmaster'
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  pass: string;
+  fromName: string;
+  fromEmail: string;
+  companyName: string;
+  isDefault?: boolean;
+}
+
 export interface SMTPSettings {
   host: string;
   port: number;
@@ -94,6 +108,7 @@ export interface SMTPSettings {
   fromEmail: string;
   companyName: string;
   isConfigured?: boolean;
+  accounts?: OfficeMailAccount[];
 }
 
 export interface SavedReport {
@@ -168,3 +183,27 @@ export interface DailyReport {
   summary: string;
 }
 
+export interface DailyAlertSettings {
+  enabled: boolean;
+  recipientEmails: string;
+  frequency: 'immediate' | 'daily_digest' | 'both';
+  onlyWhenListed: boolean;
+  scheduleHour: number;
+  preferredAccountId?: string;
+  lastSentAt?: string;
+  lastSentDate?: string;
+  totalAlertsDispatched?: number;
+}
+
+export interface DailyAlertLog {
+  id: string;
+  timestamp: string;
+  recipient: string;
+  triggerType: 'automated_cycle' | 'daily_digest' | 'test_manual' | 'status_change';
+  status: 'sent' | 'failed';
+  totalMonitoredIPs: number;
+  blacklistedCount: number;
+  blacklistedIPsList: string[];
+  messageId?: string;
+  errorMessage?: string;
+}
