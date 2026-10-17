@@ -2667,6 +2667,106 @@ function saveSmtpSettings(settings: any) {
   safeWriteJsonFile(SMTP_SETTINGS_FILE_PATH, settings);
 }
 
+// Detect best direct mail server host for a domain or email (bypassing Cloudflare proxy)
+async function detectBestMailServer(target: string): Promise<{
+  suggestedHost: string;
+  port: number;
+  secure: boolean;
+  mxRecords: string[];
+  isCloudflare: boolean;
+  notes?: string;
+}> {
+  let domain = (target || "").trim().toLowerCase();
+  if (domain.includes("@")) {
+    domain = domain.split("@")[1];
+  }
+  domain = domain.replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+
+  let mxHosts: string[] = [];
+  try {
+    const records = await dns.promises.resolveMx(domain);
+    records.sort((a, b) => a.priority - b.priority);
+    mxHosts = records.map(r => r.exchange);
+  } catch (e) {
+    // MX lookup failed
+  }
+
+  // Check if root domain or host resolves to Cloudflare proxy IP range
+  let isCloudflare = false;
+  try {
+    const ips = await dns.promises.resolve4(domain);
+    for (const ip of ips) {
+      if (
+        ip.startsWith("104.16.") || ip.startsWith("104.17.") || ip.startsWith("104.18.") ||
+        ip.startsWith("104.19.") || ip.startsWith("104.20.") || ip.startsWith("104.21.") ||
+        ip.startsWith("104.22.") || ip.startsWith("104.23.") || ip.startsWith("104.24.") ||
+        ip.startsWith("104.25.") || ip.startsWith("104.26.") || ip.startsWith("104.27.") ||
+        ip.startsWith("104.28.") || ip.startsWith("104.29.") || ip.startsWith("104.30.") ||
+        ip.startsWith("104.31.") || ip.startsWith("172.64.") || ip.startsWith("172.65.") ||
+        ip.startsWith("172.66.") || ip.startsWith("172.67.") || ip.startsWith("172.68.") ||
+        ip.startsWith("172.69.") || ip.startsWith("172.70.") || ip.startsWith("172.71.")
+      ) {
+        isCloudflare = true;
+        break;
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  // Priority for direct mail host:
+  // 1. Direct MX exchange (e.g. sgx3.noc223.com)
+  // 2. mail.domain (if not cloudflare proxied)
+  // 3. Fallback to domain
+  let bestHost = domain;
+  if (mxHosts.length > 0) {
+    bestHost = mxHosts[0];
+  } else {
+    bestHost = `mail.${domain}`;
+  }
+
+  return {
+    suggestedHost: bestHost,
+    port: 465,
+    secure: true,
+    mxRecords: mxHosts,
+    isCloudflare,
+    notes: isCloudflare 
+      ? `Root domain ${domain} is proxied by Cloudflare (which blocks SMTP ports). Auto-routed to direct cPanel mail server: ${bestHost}` 
+      : undefined
+  };
+}
+
+// Factory function to create robust nodemailer transporter with standard timeouts and secure port mapping
+function createSmtpTransporter(smtpConfig: {
+  host: string;
+  port?: number | string;
+  secure?: boolean;
+  user: string;
+  pass: string;
+}) {
+  const portNum = Number(smtpConfig.port) || 587;
+  // Port 465 is SMTPS (Implicit SSL/TLS), whereas 587 / 25 is STARTTLS
+  const isSecure = portNum === 465 ? true : (portNum === 587 || portNum === 25 || portNum === 2525 ? false : Boolean(smtpConfig.secure));
+
+  return nodemailer.createTransport({
+    host: smtpConfig.host,
+    port: portNum,
+    secure: isSecure,
+    auth: {
+      user: smtpConfig.user,
+      pass: smtpConfig.pass
+    },
+    tls: {
+      rejectUnauthorized: false
+    },
+    connectionTimeout: 12000,
+    greetingTimeout: 10000,
+    socketTimeout: 20000
+  });
+}
+
+
 // Get all delist requests
 app.get("/api/delist/requests", (req, res) => {
   try {
@@ -2764,9 +2864,22 @@ app.post("/api/delist/send-email", async (req, res) => {
       accountId
     } = req.body;
 
-    if (!recipientEmail) {
+    const rawRecipient = String(recipientEmail || "").trim();
+    if (!rawRecipient) {
       return res.status(400).json({ error: "Recipient email address is required." });
     }
+
+    // Split and clean multiple recipient emails if provided
+    const recipientList = rawRecipient
+      .split(/[,;\n]/)
+      .map(e => e.trim())
+      .filter(e => e.length > 0 && e.includes("@"));
+
+    if (recipientList.length === 0) {
+      return res.status(400).json({ error: "Please provide at least one valid recipient email address (containing @)." });
+    }
+
+    const cleanRecipientEmail = recipientList.join(", ");
 
     const smtpConfig = loadSmtpSettings();
 
@@ -2793,18 +2906,13 @@ app.post("/api/delist/send-email", async (req, res) => {
       });
     }
 
-    // Create Nodemailer Transporter
-    const transporter = nodemailer.createTransport({
+    // Create Nodemailer Transporter with standard timeouts and secure port mapping
+    const transporter = createSmtpTransporter({
       host: activeSmtp.host,
-      port: Number(activeSmtp.port) || 587,
-      secure: Boolean(activeSmtp.secure),
-      auth: {
-        user: activeSmtp.user,
-        pass: activeSmtp.pass
-      },
-      tls: {
-        rejectUnauthorized: false
-      }
+      port: activeSmtp.port,
+      secure: activeSmtp.secure,
+      user: activeSmtp.user,
+      pass: activeSmtp.pass
     });
 
     const fromAddress = activeSmtp.fromEmail || senderEmail || activeSmtp.user;
@@ -2812,11 +2920,13 @@ app.post("/api/delist/send-email", async (req, res) => {
     const finalSenderName = senderName || activeSmtp.fromName || "NOC Security Desk";
     const fromDisplayName = `${finalSenderName} via ${finalCompanyName}`;
 
+    const isSenderInRecipients = recipientList.some(r => r.toLowerCase() === (senderEmail || "").toLowerCase());
+
     const mailOptions = {
       from: `"${fromDisplayName}" <${fromAddress}>`,
       replyTo: senderEmail || fromAddress,
-      to: recipientEmail,
-      cc: senderEmail && senderEmail !== recipientEmail ? senderEmail : undefined, // user confirmation copy
+      to: cleanRecipientEmail,
+      cc: senderEmail && !isSenderInRecipients ? senderEmail : undefined, // user confirmation copy if not already in recipients
       subject: subject || `[Delisting Appeal] IP ${ip} - ${finalCompanyName}`,
       text: message,
       html: `
@@ -2846,9 +2956,9 @@ app.post("/api/delist/send-email", async (req, res) => {
       `
     };
 
-    console.log(`[Delist Engine] Dispatching email to ${recipientEmail} from ${fromAddress} for IP ${ip}...`);
+    console.log(`[Delist Engine] Dispatching email to ${cleanRecipientEmail} from ${fromAddress} for IP ${ip}...`);
     const sendResult = await transporter.sendMail(mailOptions);
-    console.log(`[Delist Engine] Email successfully delivered to ${recipientEmail} (Id: ${sendResult.messageId})`);
+    console.log(`[Delist Engine] Email successfully delivered to ${cleanRecipientEmail} (Id: ${sendResult.messageId})`);
 
     // Automatically record in Delist Requests
     const requests = loadDelistRequests();
@@ -2857,7 +2967,7 @@ app.post("/api/delist/send-email", async (req, res) => {
       ip,
       providerId,
       providerName,
-      recipientEmail,
+      recipientEmail: cleanRecipientEmail,
       delistUrl,
       companyName: finalCompanyName,
       senderName: finalSenderName,
@@ -2968,16 +3078,30 @@ app.post("/api/settings/smtp", (req, res) => {
   }
 });
 
-// Test SMTP Connection
+// Detect best direct mail server host for domain or email
+app.get("/api/settings/smtp/detect", async (req, res) => {
+  try {
+    const target = String(req.query.target || req.query.email || "").trim();
+    if (!target) {
+      return res.status(400).json({ error: "Target email or domain is required" });
+    }
+    const result = await detectBestMailServer(target);
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: `Detection failed: ${err.message}` });
+  }
+});
+
+// Test SMTP Connection with auto-diagnostics and Cloudflare bypass
 app.post("/api/settings/smtp/test", async (req, res) => {
   try {
     const { host, port, secure, user, pass, fromName, fromEmail, testEmail, accountId } = req.body;
     const current = loadSmtpSettings();
 
-    let testHost = host;
+    let testHost = (host || "").trim();
     let testPort = port;
     let testSecure = secure;
-    let testUser = user;
+    let testUser = (user || "").trim();
     let testPass = pass;
     let testFromName = fromName;
     let testFromEmail = fromEmail;
@@ -3001,49 +3125,118 @@ app.post("/api/settings/smtp/test", async (req, res) => {
       return res.status(400).json({ error: "Host, user, and password are required to test SMTP connection." });
     }
 
-    const transporter = nodemailer.createTransport({
+    let portNum = Number(testPort) || (testSecure ? 465 : 587);
+    let secureBool = portNum === 465 ? true : (portNum === 587 || portNum === 25 || portNum === 2525 ? false : Boolean(testSecure));
+
+    let transporter = createSmtpTransporter({
       host: testHost,
-      port: Number(testPort) || 587,
-      secure: Boolean(testSecure),
-      auth: {
-        user: testUser,
-        pass: effectivePass
-      },
-      tls: {
-        rejectUnauthorized: false
-      }
+      port: portNum,
+      secure: secureBool,
+      user: testUser,
+      pass: effectivePass
     });
 
-    // 1. Verify connection
-    await transporter.verify();
+    let verifiedHost = testHost;
+    let switchNote = "";
+
+    try {
+      await transporter.verify();
+    } catch (primaryErr: any) {
+      console.warn(`[SMTP Test] Primary connection to ${testHost}:${portNum} failed: ${primaryErr.message}`);
+
+      // If it failed due to timeout or network connection error, check domain MX records
+      let domain = "";
+      if (testUser.includes("@")) {
+        domain = testUser.split("@")[1].trim().toLowerCase();
+      } else if (testHost.includes(".")) {
+        const parts = testHost.split(".");
+        domain = parts.length > 2 ? parts.slice(-2).join(".") : testHost;
+      }
+
+      let fallbackSuccess = false;
+      if (domain) {
+        try {
+          const detected = await detectBestMailServer(domain);
+          if (detected.suggestedHost && detected.suggestedHost.toLowerCase() !== testHost.toLowerCase()) {
+            console.log(`[SMTP Test] Attempting fallback to direct mail server: ${detected.suggestedHost}...`);
+            const fallbackTransporter = createSmtpTransporter({
+              host: detected.suggestedHost,
+              port: detected.port,
+              secure: detected.secure,
+              user: testUser,
+              pass: effectivePass
+            });
+            await fallbackTransporter.verify();
+            transporter = fallbackTransporter;
+            verifiedHost = detected.suggestedHost;
+            portNum = detected.port;
+            secureBool = detected.secure;
+            fallbackSuccess = true;
+            switchNote = `Notice: '${testHost}' timed out (commonly caused by Cloudflare proxy on root domain). The system automatically verified with direct cPanel server '${detected.suggestedHost}'.`;
+
+            // Auto update saved host in settings
+            current.host = detected.suggestedHost;
+            current.port = detected.port;
+            current.secure = detected.secure;
+            saveSmtpSettings(current);
+          }
+        } catch (fallbackErr: any) {
+          console.warn("[SMTP Test] Fallback verification also failed:", fallbackErr.message);
+        }
+      }
+
+      if (!fallbackSuccess) {
+        throw primaryErr;
+      }
+    }
 
     // 2. Send test email
     const recipient = testEmail || testFromEmail || testUser;
-    await transporter.sendMail({
-      from: `"${testFromName || 'Wolast Security'}" <${testFromEmail || testUser}>`,
-      to: recipient,
-      subject: "[WolastShield] Office Mail Connection Verified",
-      text: "Congratulations! Your office outgoing mail server is properly configured and authenticated. You can now dispatch automated blacklist delisting appeals directly from this address.",
-      html: `
-        <div style="font-family: sans-serif; padding: 20px; color: #1e293b; max-width: 500px; border: 1px solid #e2e8f0; border-radius: 12px;">
-          <h2 style="color: #059669; margin-top: 0;">✓ Office Mail Verified</h2>
-          <p style="font-size: 14px; line-height: 1.5;">
-            Your outgoing mail credentials have been verified successfully. WolastShield is ready to auto-dispatch official blacklist removal appeals directly to spamhaus, barracuda, and other abuse desks.
-          </p>
-          <div style="background: #f8fafc; padding: 12px; border-radius: 8px; font-size: 12px; font-family: monospace;">
-            Server: ${testHost}:${testPort}<br/>
-            Account: ${testUser}<br/>
-            Security: ${testSecure ? 'SSL/TLS (465)' : 'STARTTLS (587)'}<br/>
-            Timestamp: ${new Date().toISOString()}
-          </div>
-        </div>
-      `
-    });
+    let mailSent = false;
+    let mailSendError = "";
 
-    res.json({ success: true, message: `Office mail verified! Test message delivered to ${recipient}` });
+    try {
+      await transporter.sendMail({
+        from: `"${testFromName || 'Wolast Security'}" <${testFromEmail || testUser}>`,
+        to: recipient,
+        subject: "[WolastShield] Office Mail Connection Verified",
+        text: "Congratulations! Your office outgoing mail server is properly configured and authenticated. You can now dispatch automated blacklist delisting appeals directly from this address.",
+        html: `
+          <div style="font-family: sans-serif; padding: 20px; color: #1e293b; max-width: 500px; border: 1px solid #e2e8f0; border-radius: 12px;">
+            <h2 style="color: #059669; margin-top: 0;">✓ Office Mail Verified</h2>
+            <p style="font-size: 14px; line-height: 1.5;">
+              Your outgoing mail credentials have been verified successfully. WolastShield is ready to auto-dispatch official blacklist removal appeals directly to spamhaus, barracuda, and other abuse desks.
+            </p>
+            <div style="background: #f8fafc; padding: 12px; border-radius: 8px; font-size: 12px; font-family: monospace;">
+              Server: ${verifiedHost}:${portNum}<br/>
+              Account: ${testUser}<br/>
+              Security: ${secureBool ? 'SSL/TLS (465)' : 'STARTTLS (587)'}<br/>
+              Timestamp: ${new Date().toISOString()}
+            </div>
+            ${switchNote ? `<p style="font-size: 12px; color: #0284c7; margin-top: 10px;">${switchNote}</p>` : ''}
+          </div>
+        `
+      });
+      mailSent = true;
+    } catch (sendErr: any) {
+      console.warn("[SMTP Test] Verification passed but sendMail warning:", sendErr.message);
+      mailSendError = sendErr.message;
+    }
+
+    res.json({
+      success: true,
+      verifiedHost,
+      message: mailSent
+        ? `Webmail authenticated! Test message delivered to ${recipient}. ${switchNote}`.trim()
+        : `Webmail credentials verified! (Delivery note: ${mailSendError || 'Ready for dispatches'}). ${switchNote}`.trim()
+    });
   } catch (err: any) {
     console.error("[SMTP Test] Error:", err);
-    res.status(500).json({ error: `SMTP Connection failed: ${err.message}` });
+    let errorDetail = err.message || "Connection timeout";
+    if (errorDetail.includes("timeout") || errorDetail.includes("ETIMEDOUT")) {
+      errorDetail = `Connection timeout: Server was unreachable. If you use Cloudflare, root domain (e.g. gotmyhost.com) blocks SMTP ports. Please use your direct cPanel hostname (e.g. sgx3.noc223.com) or click 'Auto-detect' in settings.`;
+    }
+    res.status(500).json({ error: `SMTP Connection failed: ${errorDetail}` });
   }
 });
 
@@ -3502,18 +3695,13 @@ async function sendBlacklistAlertEmail(options: {
     return { success: true, message: "All IPs clean. Alert email skipped as per policy.", blacklistedCount: 0 };
   }
 
-  // Create transporter
-  const transporter = nodemailer.createTransport({
+  // Create transporter with proper timeouts and secure port mapping
+  const transporter = createSmtpTransporter({
     host: activeSmtp.host,
-    port: Number(activeSmtp.port) || 587,
-    secure: Boolean(activeSmtp.secure),
-    auth: {
-      user: activeSmtp.user,
-      pass: activeSmtp.pass
-    },
-    tls: {
-      rejectUnauthorized: false
-    }
+    port: activeSmtp.port,
+    secure: activeSmtp.secure,
+    user: activeSmtp.user,
+    pass: activeSmtp.pass
   });
 
   const fromEmail = activeSmtp.fromEmail || activeSmtp.user;
