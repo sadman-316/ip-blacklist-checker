@@ -12,6 +12,7 @@ import {
   FileText, 
   Sparkles, 
   AlertCircle, 
+  AlertTriangle,
   Info, 
   X,
   Loader2,
@@ -206,10 +207,23 @@ export function DelistRequestModal({
       setQuickSmtpPort(465);
       setQuickSmtpSecure(true);
     } else if (preset === 'cpanel') {
-      const domain = senderEmail.includes('@') ? senderEmail.split('@')[1] : 'yourdomain.com';
+      const email = quickSmtpUser || senderEmail;
+      const domain = email.includes('@') ? email.split('@')[1] : 'yourdomain.com';
       setQuickSmtpHost(`mail.${domain}`);
       setQuickSmtpPort(465);
       setQuickSmtpSecure(true);
+      if (email.includes('@')) {
+        fetch(`/api/settings/smtp/detect?email=${encodeURIComponent(email)}`)
+          .then(r => r.json())
+          .then(d => {
+            if (d && d.suggestedHost) {
+              setQuickSmtpHost(d.suggestedHost);
+              setQuickSmtpPort(d.port || 465);
+              setQuickSmtpSecure(d.secure !== undefined ? d.secure : true);
+            }
+          })
+          .catch(() => {});
+      }
     }
   };
 
@@ -296,13 +310,21 @@ export function DelistRequestModal({
     return availableProviders.find(p => p.id === selectedProviderId) || availableProviders[0] || ALL_DEFAULT_PROVIDERS[0];
   }, [availableProviders, selectedProviderId]);
 
-  // Recipient email
-  const recipientEmail = useMemo(() => {
+  // Default recipient email for the currently selected provider
+  const defaultRecipientEmail = useMemo(() => {
     if (activeProvider.delistEmail) return activeProvider.delistEmail;
     if (PROVIDER_METADATA[activeProvider.id]?.email) return PROVIDER_METADATA[activeProvider.id].email;
     const cleanDomain = activeProvider.domain.replace(/^([a-z0-9-]+\.)*(dnsbl|bl|zen|rbl|truncate|sip|uri)\./i, '');
     return `abuse@${cleanDomain}`;
   }, [activeProvider]);
+
+  // Editable recipient email state (user can freely customize single or multiple addresses)
+  const [recipientEmail, setRecipientEmail] = useState<string>('');
+
+  // Automatically update recipient email when provider changes
+  useEffect(() => {
+    setRecipientEmail(defaultRecipientEmail);
+  }, [defaultRecipientEmail]);
 
   const providerTurnaround = useMemo(() => {
     return PROVIDER_METADATA[activeProvider.id]?.avgTime || '24 - 48 hours';
@@ -563,6 +585,10 @@ Target Host: ${target}`;
       triggerAlert('error', 'Please enter a valid IP address to delist.');
       return;
     }
+    if (!recipientEmail || !recipientEmail.trim()) {
+      triggerAlert('warning', 'Please enter at least one recipient email address.');
+      return;
+    }
     saveSenderInfo();
     setIsSubmitting(true);
 
@@ -738,13 +764,56 @@ Target Host: ${target}`;
                   </option>
                 ))}
               </select>
-              <div className="flex items-center justify-between text-[11px] text-slate-600 mt-2">
-                <span>
-                  Official Desk: <strong className="text-slate-900 font-mono">{recipientEmail}</strong>
-                </span>
-                <span className="text-[10px] text-slate-500 font-medium">
-                  SLA: <strong className="text-slate-700">{providerTurnaround}</strong>
-                </span>
+              {/* Recipient Delist Desk / Email Address Editor */}
+              <div className="bg-slate-50 border border-slate-200/90 rounded-xl p-3.5 space-y-2 mt-2.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                    <Mail className="w-3.5 h-3.5 text-red-600" />
+                    <span>Recipient Email Address(es) / Delist Desk</span>
+                    <span className="text-red-500">*</span>
+                  </label>
+                  {recipientEmail.trim() !== defaultRecipientEmail && (
+                    <button
+                      type="button"
+                      onClick={() => setRecipientEmail(defaultRecipientEmail)}
+                      className="text-[10px] font-bold text-red-600 hover:text-red-700 underline cursor-pointer self-start sm:self-auto"
+                      title="Reset to official provider default email address"
+                    >
+                      Reset to Default ({defaultRecipientEmail})
+                    </button>
+                  )}
+                </div>
+                
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={recipientEmail}
+                    onChange={(e) => setRecipientEmail(e.target.value)}
+                    placeholder="e.g. abuse@spamhaus.org or multiple emails separated by commas"
+                    className="w-full pl-9 pr-24 py-2 bg-white border border-slate-300 rounded-lg text-xs font-mono font-bold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-red-500/20"
+                  />
+                  <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400">
+                    <Mail className="w-3.5 h-3.5" />
+                  </div>
+                  {recipientEmail.trim() !== defaultRecipientEmail ? (
+                    <span className="absolute inset-y-0 right-2 flex items-center text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 my-auto rounded border border-amber-200">
+                      Customized
+                    </span>
+                  ) : (
+                    <span className="absolute inset-y-0 right-2 flex items-center text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 my-auto rounded border border-emerald-200">
+                      Official Desk
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[10px] text-slate-500">
+                  <span>
+                    💡 You can change or add multiple recipient emails separated by comma (e.g. <code className="font-mono text-slate-700 font-bold">abuse@domain.com, desk@domain.com</code>).
+                  </span>
+                  <span className="shrink-0 font-medium text-slate-600">
+                    SLA: <strong className="text-slate-800">{providerTurnaround}</strong>
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -752,37 +821,41 @@ Target Host: ${target}`;
           {/* Section 2: One-Click Send Hub (Highlighted Fast Actions) */}
           <div className="bg-gradient-to-br from-slate-900 to-zinc-950 text-white p-5 rounded-2xl border border-slate-800 shadow-md space-y-4">
             
-            {/* Primary Action Hero: Auto-Send from Company Mail */}
-            <div className={`p-4 rounded-xl border transition-all ${
-              serverSmtpConfigured 
-                ? 'bg-gradient-to-r from-red-950/80 via-zinc-900 to-slate-900 border-red-500/40 shadow-sm' 
-                : 'bg-slate-800/80 border-slate-700'
+            {/* Enterprise Domain Webmail Sending Card */}
+            <div className={`p-4 sm:p-5 rounded-2xl border transition-all ${
+              serverSmtpConfigured
+                ? 'bg-linear-to-r from-slate-900 via-slate-900 to-zinc-900 border-red-500/40 shadow-lg'
+                : 'bg-slate-900/90 border-amber-500/30'
             }`}>
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
                     <span className="px-2 py-0.5 bg-red-600/30 text-red-400 border border-red-500/40 rounded text-[9px] font-black uppercase tracking-wider flex items-center gap-1">
                       <Sparkles className="w-3 h-3 text-red-400" />
-                      Recommended Enterprise Method
+                      Domain Webmail (SMTP)
                     </span>
-                    {serverSmtpConfigured && (
+                    {serverSmtpConfigured ? (
                       <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3" /> Ready
+                        <CheckCircle2 className="w-3 h-3" /> Webmail Ready
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3" /> Webmail Needs Setup
                       </span>
                     )}
                   </div>
                   <h4 className="text-sm font-black text-white flex items-center gap-1.5">
                     <Send className="w-4 h-4 text-red-500" />
-                    <span>Auto-Send Directly from Company Mail (Authenticated SMTP)</span>
+                    <span>Send Appeal from Corporate Webmail</span>
                   </h4>
                   <p className="text-[11px] text-slate-300 leading-snug">
                     {serverSmtpConfigured ? (
                       <>
-                        Will dispatch directly from your company mail <strong className="text-white font-mono">{senderEmail}</strong> ({companyName}) to <strong className="text-red-400 font-mono">{recipientEmail}</strong> via authenticated SMTP with confirmation CC.
+                        Sends a direct, professional appeal from your company webmail <strong className="text-white font-mono">{senderEmail}</strong> ({companyName}) to <strong className="text-red-400 font-mono">{recipientEmail}</strong> via authenticated SMTP.
                       </>
                     ) : (
                       <>
-                        Send appeals automatically from your company email domain. 1-minute quick setup with Google Workspace, Outlook 365, Zoho, or cPanel.
+                        Configure your domain webmail (cPanel / Custom Mail Server) to send appeals directly from your official corporate email address.
                       </>
                     )}
                   </p>
@@ -804,81 +877,51 @@ Target Host: ${target}`;
                       ) : (
                         <>
                           <Send className="w-4 h-4" />
-                          <span>Send Auto Delist Email Now</span>
+                          <span>Send Delist Appeal</span>
                         </>
                       )}
                     </button>
                   ) : (
                     <button
                       type="button"
-                      onClick={() => setShowQuickSmtpSetup(!showQuickSmtpSetup)}
+                      onClick={() => {
+                        setShowQuickSmtpSetup(!showQuickSmtpSetup);
+                        applySmtpPreset('cpanel');
+                      }}
                       className="w-full sm:w-auto px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-md transition-all"
                     >
                       <SlidersHorizontal className="w-3.5 h-3.5" />
-                      <span>{showQuickSmtpSetup ? 'Close Setup' : '⚙️ Setup Company Mail (1 Min)'}</span>
+                      <span>{showQuickSmtpSetup ? 'Close Setup' : '⚙️ Setup Domain Webmail (1 Min)'}</span>
                     </button>
                   )}
                 </div>
               </div>
 
-              {/* Inline Quick SMTP Configuration Drawer */}
+              {/* Inline Quick Webmail Configuration Drawer */}
               {showQuickSmtpSetup && (
                 <div className="mt-4 pt-4 border-t border-slate-700 space-y-3 bg-slate-900/90 p-4 rounded-xl">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-amber-400 uppercase tracking-wider">
-                      Quick Company Mail (SMTP) Configurator
+                      Domain Webmail (cPanel / SMTP) Setup
                     </span>
                     <span className="text-[10px] text-slate-400">
-                      Credentials are saved safely on your server instance
+                      Saved safely on your private server
                     </span>
-                  </div>
-
-                  {/* Preset quick buttons */}
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-[10px] text-slate-400 font-bold">Auto Presets:</span>
-                    <button
-                      type="button"
-                      onClick={() => applySmtpPreset('gmail')}
-                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-bold cursor-pointer"
-                    >
-                      Google Workspace / Gmail
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => applySmtpPreset('outlook')}
-                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-bold cursor-pointer"
-                    >
-                      Microsoft 365 / Outlook
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => applySmtpPreset('zoho')}
-                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-bold cursor-pointer"
-                    >
-                      Zoho Mail
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => applySmtpPreset('cpanel')}
-                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] font-bold cursor-pointer"
-                    >
-                      cPanel / Custom Domain
-                    </button>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-slate-900">
                     <div>
-                      <label className="text-[10px] font-bold text-slate-300 block mb-0.5">SMTP Host</label>
+                      <label className="text-[10px] font-bold text-slate-300 block mb-0.5">Webmail SMTP Server / Host</label>
                       <input
                         type="text"
                         value={quickSmtpHost}
                         onChange={(e) => setQuickSmtpHost(e.target.value)}
-                        placeholder="e.g. smtp.gmail.com or mail.yourdomain.com"
+                        placeholder="e.g. mail.yourdomain.com"
                         className="w-full px-2.5 py-1.5 bg-slate-100 rounded-lg text-xs font-mono font-bold focus:outline-hidden"
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] font-bold text-slate-300 block mb-0.5">Port &amp; Security</label>
+                      <label className="text-[10px] font-bold text-slate-300 block mb-0.5">SMTP Port &amp; Encryption</label>
                       <div className="flex gap-2">
                         <input
                           type="number"
@@ -888,32 +931,43 @@ Target Host: ${target}`;
                         />
                         <button
                           type="button"
-                          onClick={() => setQuickSmtpSecure(!quickSmtpSecure)}
-                          className={`flex-1 px-2 py-1 rounded-lg text-xs font-bold cursor-pointer ${
+                          onClick={() => {
+                            const nextSec = !quickSmtpSecure;
+                            setQuickSmtpSecure(nextSec);
+                            setQuickSmtpPort(nextSec ? 465 : 587);
+                          }}
+                          className={`flex-1 px-2 py-1 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
                             quickSmtpSecure ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300'
                           }`}
                         >
-                          {quickSmtpSecure ? 'SSL/TLS (465)' : 'STARTTLS (587)'}
+                          {quickSmtpSecure ? 'SSL/TLS (Port 465)' : 'STARTTLS (Port 587)'}
                         </button>
                       </div>
                     </div>
                     <div>
-                      <label className="text-[10px] font-bold text-slate-300 block mb-0.5">Company Email / Username</label>
+                      <label className="text-[10px] font-bold text-slate-300 block mb-0.5">Webmail Email Address / Login</label>
                       <input
                         type="email"
                         value={quickSmtpUser}
-                        onChange={(e) => setQuickSmtpUser(e.target.value)}
-                        placeholder="e.g. abuse@wolast.com"
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setQuickSmtpUser(val);
+                          if (!quickSmtpHost && val.includes('@')) {
+                            const dom = val.split('@')[1];
+                            if (dom) setQuickSmtpHost(`mail.${dom}`);
+                          }
+                        }}
+                        placeholder="e.g. abuse@yourdomain.com"
                         className="w-full px-2.5 py-1.5 bg-slate-100 rounded-lg text-xs font-mono font-bold focus:outline-hidden"
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] font-bold text-slate-300 block mb-0.5">Password / App Password</label>
+                      <label className="text-[10px] font-bold text-slate-300 block mb-0.5">Webmail Password</label>
                       <input
                         type="password"
                         value={quickSmtpPass}
                         onChange={(e) => setQuickSmtpPass(e.target.value)}
-                        placeholder="App password or SMTP password"
+                        placeholder="Enter your Webmail account password"
                         className="w-full px-2.5 py-1.5 bg-slate-100 rounded-lg text-xs font-mono font-bold focus:outline-hidden"
                       />
                     </div>
@@ -934,141 +988,66 @@ Target Host: ${target}`;
                       className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
                     >
                       {quickSavingSmtp ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                      <span>Save &amp; Activate Company Mail</span>
+                      <span>Save &amp; Activate Webmail</span>
                     </button>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Secondary Sending Methods Header */}
-            <div className="flex items-center justify-between pt-1">
-              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                Or Use Alternative Send Options:
-              </span>
-              <span className="text-[11px] text-slate-400">
-                Recipient: <strong className="text-white font-mono">{recipientEmail}</strong>
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-              
-              {/* Option 1: 1-Click Gmail Web (Zero SMTP configuration required) */}
-              <button
-                type="button"
-                onClick={handleOpenGmailWeb}
-                className="p-3 bg-white/10 hover:bg-white/15 border border-white/15 hover:border-red-500/50 rounded-xl text-left transition-all cursor-pointer group flex flex-col justify-between space-y-2 shadow-xs"
-                title="Opens official Gmail composer with recipient, subject, and letter pre-filled"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="w-7 h-7 rounded-lg bg-red-600/30 border border-red-500/40 flex items-center justify-center text-red-400 group-hover:scale-105 transition-transform">
-                    <Mail className="w-3.5 h-3.5" />
-                  </div>
-                  <span className="text-[9px] font-black uppercase tracking-wider bg-red-500/20 text-red-300 px-1.5 py-0.5 rounded">
-                    Webmail
-                  </span>
-                </div>
-                <div>
-                  <div className="font-extrabold text-xs text-white group-hover:text-red-400 transition-colors">
-                    1-Click Gmail Web
-                  </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5 leading-snug">
-                    Opens in your Gmail tab with everything pre-filled.
-                  </div>
-                </div>
-                <div className="text-[10px] font-bold text-red-400 flex items-center gap-1">
-                  <span>Open Gmail</span>
-                  <ExternalLink className="w-3 h-3" />
-                </div>
-              </button>
-
-              {/* Option 2: 1-Click Outlook / Office 365 Web */}
-              <button
-                type="button"
-                onClick={handleOpenOutlookWeb}
-                className="p-3 bg-white/10 hover:bg-white/15 border border-white/15 hover:border-blue-500/50 rounded-xl text-left transition-all cursor-pointer group flex flex-col justify-between space-y-2 shadow-xs"
-                title="Opens Outlook.com or Office 365 composer with letter pre-filled"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="w-7 h-7 rounded-lg bg-blue-600/30 border border-blue-500/40 flex items-center justify-center text-blue-400 group-hover:scale-105 transition-transform">
-                    <Mail className="w-3.5 h-3.5" />
-                  </div>
-                  <span className="text-[9px] font-black uppercase tracking-wider bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded">
-                    Webmail
-                  </span>
-                </div>
-                <div>
-                  <div className="font-extrabold text-xs text-white group-hover:text-blue-400 transition-colors">
-                    1-Click Outlook Web
-                  </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5 leading-snug">
-                    Direct compose in Outlook.com / Office 365.
-                  </div>
-                </div>
-                <div className="text-[10px] font-bold text-blue-400 flex items-center gap-1">
-                  <span>Open Outlook</span>
-                  <ExternalLink className="w-3 h-3" />
-                </div>
-              </button>
-
-              {/* Option 3: Web Delist Portal */}
+            {/* Additional Utilities (Official Web Portal & Clipboard Copy) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              {/* Option 1: Web Delist Portal */}
               <button
                 type="button"
                 onClick={handleOpenWebPortal}
-                className="p-3 bg-white/10 hover:bg-white/15 border border-white/15 hover:border-emerald-500/50 rounded-xl text-left transition-all cursor-pointer group flex flex-col justify-between space-y-2 shadow-xs"
+                className="p-3 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-emerald-500/50 rounded-xl text-left transition-all cursor-pointer group flex items-center justify-between gap-3 shadow-xs"
                 title="Copies appeal text and opens official web portal"
               >
-                <div className="flex items-center justify-between">
-                  <div className="w-7 h-7 rounded-lg bg-emerald-600/30 border border-emerald-500/40 flex items-center justify-center text-emerald-400 group-hover:scale-105 transition-transform">
-                    <Globe className="w-3.5 h-3.5" />
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 group-hover:scale-105 transition-transform">
+                    <Globe className="w-4 h-4" />
                   </div>
-                  <span className="text-[9px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded">
-                    Official
-                  </span>
-                </div>
-                <div>
-                  <div className="font-extrabold text-xs text-white group-hover:text-emerald-400 transition-colors">
-                    Web Delist Portal
-                  </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5 leading-snug">
-                    Copies appeal to clipboard &amp; opens portal form.
+                  <div>
+                    <div className="font-extrabold text-xs text-white group-hover:text-emerald-400 transition-colors">
+                      Official Web Delist Portal
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-0.5">
+                      Copies letter &amp; opens {activeProvider.name} form
+                    </div>
                   </div>
                 </div>
-                <div className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
-                  <span>Open Portal</span>
+                <div className="text-[10px] font-bold text-emerald-400 flex items-center gap-1 shrink-0">
+                  <span>Open</span>
                   <ExternalLink className="w-3 h-3" />
                 </div>
               </button>
 
-              {/* Option 4: Copy Appeal Text */}
+              {/* Option 2: Copy Appeal Text */}
               <button
                 type="button"
                 onClick={handleCopyText}
-                className="p-3 bg-white/10 hover:bg-white/15 border border-white/15 hover:border-amber-500/50 rounded-xl text-left transition-all cursor-pointer group flex flex-col justify-between space-y-2 shadow-xs"
+                className="p-3 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-amber-500/50 rounded-xl text-left transition-all cursor-pointer group flex items-center justify-between gap-3 shadow-xs"
                 title="Copy entire subject line and formal appeal to clipboard"
               >
-                <div className="flex items-center justify-between">
-                  <div className="w-7 h-7 rounded-lg bg-amber-600/30 border border-amber-500/40 flex items-center justify-center text-amber-400 group-hover:scale-105 transition-transform">
-                    <Copy className="w-3.5 h-3.5" />
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-amber-600/20 border border-amber-500/30 flex items-center justify-center text-amber-400 group-hover:scale-105 transition-transform">
+                    <Copy className="w-4 h-4" />
                   </div>
-                  <span className="text-[9px] font-black uppercase tracking-wider bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded">
-                    Clipboard
-                  </span>
-                </div>
-                <div>
-                  <div className="font-extrabold text-xs text-white group-hover:text-amber-400 transition-colors">
-                    Copy Full Letter
-                  </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5 leading-snug">
-                    Copies subject &amp; body to paste into any email client.
+                  <div>
+                    <div className="font-extrabold text-xs text-white group-hover:text-amber-400 transition-colors">
+                      Copy Appeal Letter
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-0.5">
+                      Copy subject and message to clipboard
+                    </div>
                   </div>
                 </div>
-                <div className="text-[10px] font-bold text-amber-400 flex items-center gap-1">
-                  <span>{copied ? 'Copied!' : 'Copy Appeal'}</span>
+                <div className="text-[10px] font-bold text-amber-400 flex items-center gap-1 shrink-0">
+                  <span>{copied ? 'Copied!' : 'Copy'}</span>
                   {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                 </div>
               </button>
-
             </div>
           </div>
 
@@ -1292,7 +1271,7 @@ Target Host: ${target}`;
               ) : (
                 <>
                   <Send className="w-3.5 h-3.5" />
-                  <span>{serverSmtpConfigured ? '⚡ Auto-Send from Company Mail' : '⚡ Setup & Auto-Send'}</span>
+                  <span>{serverSmtpConfigured ? '✉️ Send Appeal from Company Mail' : '⚙️ Setup & Send Mail'}</span>
                 </>
               )}
             </button>
