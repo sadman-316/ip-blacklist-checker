@@ -2916,11 +2916,32 @@ app.post("/api/delist/send-email", async (req, res) => {
     });
 
     const fromAddress = activeSmtp.fromEmail || senderEmail || activeSmtp.user;
-    const finalCompanyName = companyName || activeSmtp.companyName || "Wolast Technology Ltd.";
-    const finalSenderName = senderName || activeSmtp.fromName || "NOC Security Desk";
-    const fromDisplayName = `${finalSenderName} via ${finalCompanyName}`;
+    const finalCompanyName = companyName || activeSmtp.companyName || "Security Desk";
+    const finalSenderName = (senderName || activeSmtp.fromName || "").trim();
+
+    // Clean professional sender display name (no automated "via" keyword)
+    const fromDisplayName = finalSenderName || `${finalCompanyName} Security NOC`;
 
     const isSenderInRecipients = recipientList.some(r => r.toLowerCase() === (senderEmail || "").toLowerCase());
+
+    // Format message as clean standard human business email (no bot banners, no automated wrappers)
+    const formattedHtml = message
+      .split(/\n\n+/)
+      .map(paragraph => `<p style="margin: 0 0 16px 0; line-height: 1.6;">${paragraph.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}</p>`)
+      .join('\n');
+
+    const cleanHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 16px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #1e293b; background-color: #ffffff;">
+  <div style="max-width: 650px; margin: 0 auto; padding: 0 16px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #1e293b;">
+    ${formattedHtml}
+  </div>
+</body>
+</html>`;
 
     const mailOptions = {
       from: `"${fromDisplayName}" <${fromAddress}>`,
@@ -2929,31 +2950,7 @@ app.post("/api/delist/send-email", async (req, res) => {
       cc: senderEmail && !isSenderInRecipients ? senderEmail : undefined, // user confirmation copy if not already in recipients
       subject: subject || `[Delisting Appeal] IP ${ip} - ${finalCompanyName}`,
       text: message,
-      html: `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 680px; margin: 0 auto; color: #1e293b; line-height: 1.6;">
-          <div style="background-color: #0f172a; color: #ffffff; padding: 18px 24px; border-radius: 8px 8px 0 0;">
-            <h2 style="margin: 0; font-size: 16px; font-weight: 800; letter-spacing: 0.5px; text-transform: uppercase;">
-              Formal Blacklist Removal &amp; Remediation Appeal
-            </h2>
-            <p style="margin: 4px 0 0 0; font-size: 12px; color: #94a3b8;">
-              Database: ${providerName} | Target IP: <code style="color: #f87171; font-weight: bold;">${ip}</code>
-            </p>
-          </div>
-          <div style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: none; padding: 24px; border-radius: 0 0 8px 8px;">
-            <div style="background-color: #f8fafc; border-left: 4px solid #dc2626; padding: 12px 16px; margin-bottom: 20px; font-size: 12px;">
-              <strong>Sender:</strong> ${finalSenderName} (${fromAddress})<br/>
-              <strong>Organization:</strong> ${finalCompanyName}<br/>
-              <strong>Remediation Classification:</strong> ${reasonCategory || 'Security Investigation & Resolution'}
-            </div>
-            <div style="font-size: 13px; color: #334155; white-space: pre-wrap; font-family: monospace;">${message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
-            <hr style="margin: 24px 0; border: none; border-top: 1px solid #e2e8f0;"/>
-            <p style="font-size: 11px; color: #64748b; margin: 0;">
-              Dispatched via WolastShield IP Reputation &amp; Monitoring Engine.<br/>
-              To confirm receipt or request further diagnostic telemetry, reply directly to: <a href="mailto:${fromAddress}" style="color: #2563eb;">${fromAddress}</a>
-            </p>
-          </div>
-        </div>
-      `
+      html: cleanHtml
     };
 
     console.log(`[Delist Engine] Dispatching email to ${cleanRecipientEmail} from ${fromAddress} for IP ${ip}...`);
