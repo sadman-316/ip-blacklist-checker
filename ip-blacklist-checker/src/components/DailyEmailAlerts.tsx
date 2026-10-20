@@ -359,14 +359,14 @@ export const DailyEmailAlerts: React.FC<DailyEmailAlertsProps> = ({
           </div>
 
           <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Sender Company Mail</div>
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Sender Webmail</div>
             <div className="text-xs font-black text-white truncate mt-1.5" title={primaryFromEmail || 'Not Configured'}>
               {primaryFromEmail || (officeAccounts[0]?.fromEmail) || 'Not Configured'}
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
               {smtpConfigured ? (
                 <span className="text-emerald-400 font-bold flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" /> SMTP Verified
+                  <CheckCircle2 className="w-3 h-3" /> Webmail Verified
                 </span>
               ) : (
                 <span className="text-amber-400 font-bold">Needs Configuration</span>
@@ -384,17 +384,17 @@ export const DailyEmailAlerts: React.FC<DailyEmailAlertsProps> = ({
         </div>
       </div>
 
-      {/* Warning Notice if SMTP is not configured */}
+      {/* Warning Notice if Webmail is not configured */}
       {!smtpConfigured && (
         <div className="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
           <div className="flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
             <div>
               <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wider">
-                Company Outgoing Mail (SMTP) Not Configured Yet
+                Domain Webmail (SMTP) Not Configured Yet
               </h4>
               <p className="text-xs text-amber-800 mt-0.5">
-                Configure your company outgoing mail server (Google Workspace, Outlook 365, Zoho, or cPanel Webmail) in System Settings to enable automated email dispatches.
+                Configure your cPanel or custom domain Webmail account in System Settings to enable automated daily blacklist alerts and delist emails.
               </p>
             </div>
           </div>
@@ -405,7 +405,7 @@ export const DailyEmailAlerts: React.FC<DailyEmailAlertsProps> = ({
               className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer"
             >
               <Settings className="w-3.5 h-3.5" />
-              <span>Configure in System Settings</span>
+              <span>Configure Webmail in Settings</span>
             </button>
           )}
         </div>
