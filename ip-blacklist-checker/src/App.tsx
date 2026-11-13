@@ -8,7 +8,7 @@ import {
   LogOut, Settings, Users, Bell, BellOff, Loader2, AlertTriangle, ChevronRight, Mail, Send
 } from 'lucide-react';
 import { IPScanResult, SubnetScanReport, BlacklistProvider, SavedReport, UserProfile } from './types';
-import { downloadCSVReport, downloadJSONReport } from './utils';
+import { downloadCSVReport, downloadExcelReport, downloadJSONReport } from './utils';
 
 // Firebase Imports
 import { auth, db } from './firebase';
@@ -2145,10 +2145,18 @@ export default function App() {
                         <button
                           onClick={() => downloadCSVReport(report)}
                           className="bg-white hover:bg-emerald-50 hover:text-emerald-700 border border-slate-300 text-slate-700 text-xs font-bold px-3 py-1.5 rounded-xl shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
-                          title="Export All IPs as CSV"
+                          title="Export All IPs as CSV (Listed IPs marked at top & flagged)"
                         >
                           <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
                           <span>Export CSV</span>
+                        </button>
+                        <button
+                          onClick={() => downloadExcelReport(report)}
+                          className="bg-slate-900 hover:bg-black text-white border border-slate-800 text-xs font-bold px-3 py-1.5 rounded-xl shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
+                          title="Export Color-Highlighted Excel Sheet (.xls) with Listed IPs marked in Red"
+                        >
+                          <FileSpreadsheet className="w-3.5 h-3.5 text-red-400" />
+                          <span>Excel Sheet</span>
                         </button>
                       </div>
                     </div>
@@ -2418,10 +2426,18 @@ export default function App() {
                             <button
                               onClick={() => downloadCSVReport(report)}
                               className="bg-white border border-slate-300 hover:border-slate-400 text-slate-800 font-bold text-xs px-3 py-1.5 rounded-lg shadow-xs transition-all flex items-center gap-1 cursor-pointer"
-                              title="Export CSV"
+                              title="Export CSV (Listed IPs marked)"
                             >
                               <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
                               CSV
+                            </button>
+                            <button
+                              onClick={() => downloadExcelReport(report)}
+                              className="bg-slate-900 hover:bg-black border border-slate-800 text-white font-bold text-xs px-3 py-1.5 rounded-lg shadow-xs transition-all flex items-center gap-1 cursor-pointer"
+                              title="Export Color-Highlighted Excel Sheet (.xls)"
+                            >
+                              <FileSpreadsheet className="w-3.5 h-3.5 text-red-400" />
+                              Sheet
                             </button>
                             <button
                               onClick={() => downloadJSONReport(report)}
