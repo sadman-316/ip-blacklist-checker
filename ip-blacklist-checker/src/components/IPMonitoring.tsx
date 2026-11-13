@@ -2,7 +2,8 @@ import React, { useEffect, useState } from "react";
 import { db } from "../firebase";
 import { collection, getDocs, doc, writeBatch } from "firebase/firestore";
 import { MonitoredIP, UserProfile, AlertNotification, DailyReport } from "../types";
-import { downloadSubnetMatrixCSV, downloadDailyReportCSV, downloadDailyReportJSON } from "../utils";
+import { downloadSubnetMatrixCSV, downloadSubnetMatrixExcel, downloadDailyReportCSV, downloadDailyReportJSON } from "../utils";
+import { DailyEmailAlerts } from "./DailyEmailAlerts";
 import { 
   ShieldCheck, 
   ShieldAlert, 
@@ -33,13 +34,16 @@ import {
   Server,
   Radio,
   Clock,
-  FileSpreadsheet
+  FileSpreadsheet,
+  ExternalLink,
+  Mail
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
 interface IPMonitoringProps {
   currentUser: UserProfile;
   triggerAlert: (type: "success" | "error" | "info" | "warning", message: string) => void;
+  onOpenDelistAppeal?: (targetIP: string, providerId?: string) => void;
 }
 
 // Subnet metrics calculation helper
@@ -122,7 +126,7 @@ export function computeSubnetStats(item: MonitoredIP): SubnetStats {
   };
 }
 
-export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, triggerAlert }) => {
+export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, triggerAlert, onOpenDelistAppeal }) => {
   const [monitoredIPs, setMonitoredIPs] = useState<MonitoredIP[]>([]);
   const [notifications, setNotifications] = useState<AlertNotification[]>([]);
   const [loading, setLoading] = useState(true);
@@ -142,7 +146,7 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
   const isAdmin = currentUser.role === "admin";
 
   // Sub-tabs and Reports States
-  const [activeSubTab, setActiveSubTab] = useState<"hosts" | "reports">("hosts");
+  const [activeSubTab, setActiveSubTab] = useState<"hosts" | "reports" | "alerts">("hosts");
   const [dailyReports, setDailyReports] = useState<DailyReport[]>([]);
   const [reportsLoading, setReportsLoading] = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
@@ -164,6 +168,7 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
   const [modalScanning, setModalScanning] = useState(false);
   const viewIpPageSize = 10;
   const [copiedIp, setCopiedIp] = useState<string | null>(null);
+  const [quotaExhausted, setQuotaExhausted] = useState<boolean>(false);
 
   const fetchDailyReports = async () => {
     setReportsLoading(true);
@@ -303,6 +308,14 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
   useEffect(() => {
     fetchMonitoredData();
     fetchDailyReports();
+    fetch("/api/system/quota")
+      .then(res => res.json())
+      .then(data => {
+        if (data.firestoreWriteQuotaExhausted) {
+          setQuotaExhausted(true);
+        }
+      })
+      .catch(() => {});
   }, [currentUser, isAdmin]);
 
   // Real-time scan for a single target / subnet
@@ -359,40 +372,63 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
         console.warn("Express API update monitored IP skipped:", apiErr);
       }
 
-      // 3. Persist to Firestore if available
-      try {
-        const ipDocRef = doc(db, "monitored_ips", item.id);
-        const batch = writeBatch(db);
-        batch.update(ipDocRef, {
-          status: newStatus,
-          listedCount: scanResult.listedCount,
-          listings: firstResult.listings || {},
-          totalIPs: scanResult.totalIPs,
-          blacklistedIPs: blacklisted,
-          simulate: false,
-          lastChecked: new Date().toISOString()
-        });
-
-        if (oldStatus !== "unknown" && oldStatus !== newStatus) {
-          const newNotification: AlertNotification = {
-            id: `notif_${Date.now()}`,
-            ip: item.ipOrCidr,
-            oldStatus,
-            newStatus,
+      // 3. Persist to Firestore if available and quota is not exhausted
+      if (!quotaExhausted) {
+        try {
+          const ipDocRef = doc(db, "monitored_ips", item.id);
+          const batch = writeBatch(db);
+          batch.update(ipDocRef, {
+            status: newStatus,
             listedCount: scanResult.listedCount,
-            timestamp: new Date().toISOString(),
-            read: false,
-            userId: item.createdBy
-          };
-          const notifDocRef = doc(collection(db, "notifications"));
-          batch.set(notifDocRef, newNotification);
+            listings: firstResult.listings || {},
+            totalIPs: scanResult.totalIPs,
+            blacklistedIPs: blacklisted,
+            simulate: false,
+            lastChecked: new Date().toISOString()
+          });
 
-          setNotifications(prev => [newNotification, ...prev]);
-          saveLocalNotifs([newNotification, ...notifications]);
+          if (oldStatus !== "unknown" && oldStatus !== newStatus) {
+            const newNotification: AlertNotification = {
+              id: `notif_${Date.now()}`,
+              ip: item.ipOrCidr,
+              oldStatus,
+              newStatus,
+              listedCount: scanResult.listedCount,
+              timestamp: new Date().toISOString(),
+              read: false,
+              userId: item.createdBy
+            };
+            const notifDocRef = doc(collection(db, "notifications"));
+            batch.set(notifDocRef, newNotification);
+
+            setNotifications(prev => [newNotification, ...prev]);
+            saveLocalNotifs([newNotification, ...notifications]);
+          }
+          await batch.commit();
+        } catch (fErr: any) {
+          const errMsg = fErr?.message || String(fErr);
+          if (fErr?.code === 'resource-exhausted' || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('Quota limit exceeded')) {
+            console.warn("Firestore daily write quota reached. Switched to local storage.");
+            setQuotaExhausted(true);
+          }
+          // Fallback notification in local store if Firestore fails
+          if (oldStatus !== "unknown" && oldStatus !== newStatus) {
+            const newNotification: AlertNotification = {
+              id: `notif_${Date.now()}`,
+              ip: item.ipOrCidr,
+              oldStatus,
+              newStatus,
+              listedCount: scanResult.listedCount,
+              timestamp: new Date().toISOString(),
+              read: false,
+              userId: item.createdBy
+            };
+            setNotifications(prev => [newNotification, ...prev]);
+            saveLocalNotifs([newNotification, ...notifications]);
+          }
         }
-        await batch.commit();
-      } catch (fErr) {
-        // Fallback notification in local store if Firestore fails
+      } else {
+        // Safe local notification when quota exhausted
         if (oldStatus !== "unknown" && oldStatus !== newStatus) {
           const newNotification: AlertNotification = {
             id: `notif_${Date.now()}`,
@@ -491,14 +527,22 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
         console.warn("Server API add monitored IP error:", apiErr);
       }
 
-      // 3. Write to Firestore if available
-      try {
-        const docRef = doc(db, "monitored_ips", tempId);
-        const batch = writeBatch(db);
-        batch.set(docRef, newIP);
-        await batch.commit();
-      } catch (fErr) {
-        console.warn("Firestore add monitored IP error:", fErr);
+      // 3. Write to Firestore if available and quota permits
+      if (!quotaExhausted) {
+        try {
+          const docRef = doc(db, "monitored_ips", tempId);
+          const batch = writeBatch(db);
+          batch.set(docRef, newIP);
+          await batch.commit();
+        } catch (fErr: any) {
+          const errMsg = fErr?.message || String(fErr);
+          if (fErr?.code === 'resource-exhausted' || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('Quota limit exceeded')) {
+            console.warn("Firestore daily write quota reached. Target saved to server and local storage.");
+            setQuotaExhausted(true);
+          } else {
+            console.warn("Firestore add monitored IP error:", fErr);
+          }
+        }
       }
 
     } catch (err: any) {
@@ -571,14 +615,22 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
         console.warn("Server API update monitored IP error:", apiErr);
       }
 
-      // Update Firestore
-      try {
-        const ipDocRef = doc(db, "monitored_ips", editingIP.id);
-        const batch = writeBatch(db);
-        batch.update(ipDocRef, updatedFields as any);
-        await batch.commit();
-      } catch (fErr) {
-        console.warn("Firestore update error:", fErr);
+      // Update Firestore if quota permits
+      if (!quotaExhausted) {
+        try {
+          const ipDocRef = doc(db, "monitored_ips", editingIP.id);
+          const batch = writeBatch(db);
+          batch.update(ipDocRef, updatedFields as any);
+          await batch.commit();
+        } catch (fErr: any) {
+          const errMsg = fErr?.message || String(fErr);
+          if (fErr?.code === 'resource-exhausted' || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('Quota limit exceeded')) {
+            console.warn("Firestore daily write quota reached. Target updated in server and local storage.");
+            setQuotaExhausted(true);
+          } else {
+            console.warn("Firestore update error:", fErr);
+          }
+        }
       }
 
     } catch (err: any) {
@@ -608,14 +660,22 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
         console.warn("Server API delete monitored IP error:", apiErr);
       }
 
-      // 3. Call Firestore delete
-      try {
-        const ipDocRef = doc(db, "monitored_ips", deletingIP.id);
-        const batch = writeBatch(db);
-        batch.delete(ipDocRef);
-        await batch.commit();
-      } catch (fErr) {
-        console.warn("Firestore delete error:", fErr);
+      // 3. Call Firestore delete if quota permits
+      if (!quotaExhausted) {
+        try {
+          const ipDocRef = doc(db, "monitored_ips", deletingIP.id);
+          const batch = writeBatch(db);
+          batch.delete(ipDocRef);
+          await batch.commit();
+        } catch (fErr: any) {
+          const errMsg = fErr?.message || String(fErr);
+          if (fErr?.code === 'resource-exhausted' || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('Quota limit exceeded')) {
+            console.warn("Firestore daily write quota reached. Target deleted from server and local storage.");
+            setQuotaExhausted(true);
+          } else {
+            console.warn("Firestore delete error:", fErr);
+          }
+        }
       }
     } catch (err) {
       console.error("Error deleting monitored IP:", err);
@@ -733,10 +793,20 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
   const handleExportSubnetCSV = (item: MonitoredIP, ipList: any[]) => {
     try {
       downloadSubnetMatrixCSV(item, ipList);
-      triggerAlert("success", `Exported subnet report for ${item.ipOrCidr} successfully.`);
+      triggerAlert("success", `Exported subnet CSV report for ${item.ipOrCidr} with listed IPs marked.`);
     } catch (err: any) {
       console.error("Failed to export subnet CSV:", err);
       triggerAlert("error", "Failed to download export file.");
+    }
+  };
+
+  const handleExportSubnetExcel = (item: MonitoredIP, ipList: any[]) => {
+    try {
+      downloadSubnetMatrixExcel(item, ipList);
+      triggerAlert("success", `Exported color-highlighted sheet for ${item.ipOrCidr} successfully.`);
+    } catch (err: any) {
+      console.error("Failed to export subnet Excel sheet:", err);
+      triggerAlert("error", "Failed to download sheet file.");
     }
   };
 
@@ -840,15 +910,23 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
     const unread = notifications.filter(n => !n.read);
     if (unread.length === 0) return;
 
-    try {
-      const batch = writeBatch(db);
-      unread.forEach(n => {
-        const docRef = doc(db, "notifications", n.id);
-        batch.update(docRef, { read: true });
-      });
-      await batch.commit();
-    } catch (err) {
-      console.warn("Firestore mark read error:", err);
+    if (!quotaExhausted) {
+      try {
+        const batch = writeBatch(db);
+        unread.forEach(n => {
+          const docRef = doc(db, "notifications", n.id);
+          batch.update(docRef, { read: true });
+        });
+        await batch.commit();
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        if (err?.code === 'resource-exhausted' || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('Quota limit exceeded')) {
+          console.warn("Firestore daily write quota reached. Notifications marked read locally.");
+          setQuotaExhausted(true);
+        } else {
+          console.warn("Firestore mark read error:", err);
+        }
+      }
     }
     
     setNotifications(prev => prev.map(n => ({ ...n, read: true })));
@@ -893,6 +971,39 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
 
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* Firestore Quota Notice Banner */}
+      {quotaExhausted && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl p-4 flex items-start gap-3 shadow-2xs">
+          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="flex-1 text-xs">
+            <div className="font-bold flex items-center justify-between">
+              <span className="text-amber-950 font-semibold">Firestore Free Daily Write Limit Reached — Local Persistence Active</span>
+              <button
+                onClick={() => setQuotaExhausted(false)}
+                className="text-amber-700 hover:text-amber-900 text-[11px] font-bold underline cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+            <p className="mt-1 text-amber-800 leading-relaxed">
+              The free tier daily write unit limit for Cloud Firestore has been reached. WolastShield has automatically engaged local server storage mode—all target modifications, live RBL scans, and alert notifications are safely saved to the server without any data loss. The write quota will automatically reset tomorrow at 00:00 UTC.
+            </p>
+            <div className="mt-2.5 flex items-center gap-3">
+              <a
+                href="https://console.firebase.google.com/project/winged-weaver-gcf5x/firestore/databases/ai-studio-ipblacklistcheck-8f4ec590-213f-4737-9ee1-f4548e64520d/data?openUpgradeDialog=true"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 font-bold text-amber-950 hover:underline bg-amber-200/80 px-2.5 py-1 rounded-lg text-[11px] border border-amber-300 transition-colors"
+              >
+                <span>Manage Firebase Quotas</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+              <span className="text-[11px] text-amber-700">Detailed quota terms under Spark plan on Firebase Pricing</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Sub-navigation tabs */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-200 pb-3 gap-3">
         <div className="flex items-center space-x-2">
@@ -931,6 +1042,18 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
             }`}>
               {dailyReports.length}
             </span>
+          </button>
+
+          <button
+            onClick={() => setActiveSubTab("alerts")}
+            className={`px-4 py-2 text-xs font-black uppercase tracking-wider rounded-xl transition-all duration-200 flex items-center space-x-2 cursor-pointer ${
+              activeSubTab === "alerts"
+                ? "bg-red-600 text-white shadow-md shadow-red-600/20"
+                : "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+            }`}
+          >
+            <Bell className="w-4 h-4" />
+            <span>Daily Email Alerts</span>
           </button>
         </div>
 
@@ -1284,6 +1407,17 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
                     </>
                   )}
                 </button>
+
+                {onOpenDelistAppeal && (
+                  <button
+                    onClick={() => onOpenDelistAppeal("")}
+                    className="bg-red-600 hover:bg-red-700 text-white px-3.5 py-2 rounded-xl text-xs font-black uppercase tracking-widest shadow-xs flex items-center gap-1.5 cursor-pointer transition-all shrink-0"
+                    title="Open Delisting Appeal Engine"
+                  >
+                    <Mail className="w-3.5 h-3.5" />
+                    <span>Delist IP Appeal</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1469,6 +1603,26 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
                                   <Eye className="w-3.5 h-3.5" />
                                 </button>
 
+                                {/* Delist Appeal Action */}
+                                {onOpenDelistAppeal && (
+                                  <button
+                                    onClick={() => {
+                                      const targetIp = (item.blacklistedIPs && item.blacklistedIPs.length > 0)
+                                        ? item.blacklistedIPs[0].ip
+                                        : item.ipOrCidr.split('/')[0].split(',')[0].trim();
+                                      onOpenDelistAppeal(targetIp);
+                                    }}
+                                    className={`p-2 rounded-xl transition-all duration-200 cursor-pointer shadow-xs flex items-center justify-center border ${
+                                      stats.status === "listed"
+                                        ? "bg-rose-50 hover:bg-rose-100 text-rose-600 border-rose-200"
+                                        : "bg-white hover:bg-red-50 text-slate-600 hover:text-red-600 border-slate-200"
+                                    }`}
+                                    title={stats.status === "listed" ? "Draft Delist Appeal for Listed IP" : "Draft Delist Request"}
+                                  >
+                                    <Mail className="w-3.5 h-3.5 text-red-600" />
+                                  </button>
+                                )}
+
                                 {/* Edit Subnet Target */}
                                 <button
                                   onClick={() => {
@@ -1647,6 +1801,15 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
             </div>
           )}
         </div>
+      )}
+
+      {/* Sub-tab: Daily Email Alerts */}
+      {activeSubTab === "alerts" && (
+        <DailyEmailAlerts
+          currentUser={currentUser}
+          triggerAlert={triggerAlert}
+          onOpenDelistAppeal={onOpenDelistAppeal}
+        />
       )}
 
       {/* Delete Confirmation Modal */}
@@ -1937,11 +2100,20 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
 
                       <button
                         onClick={() => handleExportSubnetCSV(viewingIP, filteredViewIPs)}
-                        className="bg-slate-900 hover:bg-black text-white px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest shadow-xs flex items-center justify-center gap-1.5 cursor-pointer border border-slate-800 transition-all"
-                        title="Export Subnet Report to CSV"
+                        className="bg-white hover:bg-emerald-50 border border-slate-300 text-slate-800 px-3.5 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest shadow-xs flex items-center justify-center gap-1.5 cursor-pointer transition-all"
+                        title="Export Subnet Report to CSV (Listed IPs marked)"
+                      >
+                        <Download className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Export CSV</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleExportSubnetExcel(viewingIP, filteredViewIPs)}
+                        className="bg-slate-900 hover:bg-black text-white px-3.5 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest shadow-xs flex items-center justify-center gap-1.5 cursor-pointer border border-slate-800 transition-all"
+                        title="Export Color-Highlighted Excel Sheet (.xls)"
                       >
                         <Download className="w-3.5 h-3.5 text-red-400" />
-                        <span>Export CSV</span>
+                        <span>Excel Sheet</span>
                       </button>
                     </div>
                   </div>
@@ -2002,17 +2174,28 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
                                   )}
                                 </td>
                                 <td className="py-3 px-4 text-center">
-                                  <button
-                                    onClick={() => handleCopyIP(ipItem.ip)}
-                                    className="p-1 hover:bg-slate-200 rounded-lg text-slate-500 hover:text-slate-800 transition-colors inline-flex items-center justify-center border-none bg-transparent cursor-pointer"
-                                    title="Copy IP Address"
-                                  >
-                                    {copiedIp === ipItem.ip ? (
-                                      <Check className="w-3.5 h-3.5 text-emerald-600" />
-                                    ) : (
-                                      <Copy className="w-3.5 h-3.5" />
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      onClick={() => handleCopyIP(ipItem.ip)}
+                                      className="p-1 hover:bg-slate-200 rounded-lg text-slate-500 hover:text-slate-800 transition-colors inline-flex items-center justify-center border-none bg-transparent cursor-pointer"
+                                      title="Copy IP Address"
+                                    >
+                                      {copiedIp === ipItem.ip ? (
+                                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                      ) : (
+                                        <Copy className="w-3.5 h-3.5" />
+                                      )}
+                                    </button>
+                                    {onOpenDelistAppeal && (
+                                      <button
+                                        onClick={() => onOpenDelistAppeal(ipItem.ip)}
+                                        className="p-1 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-lg transition-colors inline-flex items-center justify-center border-none bg-transparent cursor-pointer"
+                                        title="Draft Delist Appeal for this IP"
+                                      >
+                                        <Mail className="w-3.5 h-3.5" />
+                                      </button>
                                     )}
-                                  </button>
+                                  </div>
                                 </td>
                               </tr>
                             );
