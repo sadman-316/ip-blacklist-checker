@@ -120,7 +120,7 @@ export const BLACKLIST_PROVIDERS: BlacklistProvider[] = [
     id: 'spfbl',
     name: 'SPFBL DNSBL',
     domain: 'dnsbl.spfbl.net',
-    description: 'Collaborative peer-to-peer blacklist designed to filter spam, malicious senders, and dynamic ranges.',
+    description: 'Collaborative peer-to-peer blacklist. Flags confirmed spam/abuse blacklists (127.0.0.2); non-blacklist NAT/dynamic/RFC informational flags are excluded.',
     delistUrl: 'https://spfbl.net/en/dnsbl/',
     category: 'Spam'
   },
