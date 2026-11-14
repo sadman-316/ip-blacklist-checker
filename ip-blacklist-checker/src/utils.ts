@@ -22,17 +22,58 @@ export function triggerFileDownload(content: string, filename: string, mimeType:
   }
 }
 
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  spamhaus: "Spamhaus ZEN",
+  barracuda: "Barracuda BRBL",
+  spamcop: "SpamCop",
+  uceprotect1: "UCEPROTECT Level 1",
+  uceprotect2: "UCEPROTECT Level 2",
+  uceprotect3: "UCEPROTECT Level 3",
+  blocklist: "Blocklist.de",
+  sorbs: "SORBS Aggregate",
+  sorbsduhl: "SORBS DUHL",
+  dronebl: "DroneBL",
+  gbudb: "GBUdb Truncate",
+  spfbl: "SPFBL DNSBL",
+  lashback: "Lashback UBL",
+  psbl: "Passive Spam Block List (PSBL)",
+  wpbl: "Weighted Private Block List",
+  ivmsip: "Invaluement ivmSIP",
+  ivmuri: "Invaluement ivmURI",
+  spamratsdyna: "SpamRats Dyna",
+  spamrats: "SpamRats Spam",
+  spamratsnoptr: "SpamRats NoPtr",
+  spamratsauth: "SpamRats Auth",
+  mailspikebl: "Mailspike Blacklist",
+  mailspikez: "Mailspike Zombie",
+  hostkarma: "Hostkarma Black",
+  s5hnet: "s5h.net",
+  nixspam: "NiX Spam",
+  justspam: "JustSpam",
+  tornevall: "Tornevall",
+  nordspam: "NordSpam",
+  zerospam: "0Spam",
+  suomispam: "Suomispam",
+  efnetrbl: "EFnet RBL",
+  spameatingmonkey: "SpamEatingMonkey",
+  zapbl: "ZapBL",
+  interserver: "Interserver RBL"
+};
+
 function getListedProvidersLabel(listings: Record<string, any> | undefined): string {
   if (!listings) return "None";
   const active = Object.entries(listings)
     .filter(([_, value]: any) => value && value.listed)
     .map(([key, value]: any) => {
-      const name = value?.name || key;
-      const db = value?.database ? ` (${value.database})` : "";
-      const code = value?.responseCode && value.responseCode !== "NXDOMAIN" ? ` [${value.responseCode}]` : "";
-      return `${name}${db}${code}`;
-    });
-  return active.length > 0 ? active.join("; ") : "None";
+      const rawName = (value?.name || PROVIDER_DISPLAY_NAMES[key] || key).toString().trim();
+      // Strip any accidental parenthesized domain/IP or bracketed response code
+      return rawName
+        .replace(/\s*\([^)]*\)/g, "")
+        .replace(/\s*\[[^\]]*\]/g, "")
+        .trim();
+    })
+    .filter(Boolean);
+  return active.length > 0 ? Array.from(new Set(active)).join(", ") : "None";
 }
 
 function escapeCsvCell(val: unknown): string {
@@ -330,18 +371,14 @@ export function downloadDailyReportCSV(report: DailyReport) {
   const headers = ["Flagged IP", "Parent Subnet", "Parent Label", "Listed Databases", "Location / ISP", "Report Date"];
   
   const rows = (report.blacklistedIPs || []).map(bItem => {
-    const dbs = Object.entries(bItem.listings || {})
-      .filter(([_, v]: any) => v && v.listed)
-      .map(([k, _]) => k)
-      .join("; ");
-
+    const dbs = getListedProvidersLabel(bItem.listings);
     const loc = bItem.location ? `${bItem.location.city || ""}, ${bItem.location.countryCode || ""}` : "Unknown";
 
     return [
       bItem.ip,
       bItem.parentTarget || "N/A",
       bItem.parentLabel || "N/A",
-      dbs || "None",
+      dbs,
       loc,
       report.date
     ];
