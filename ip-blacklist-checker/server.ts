@@ -133,7 +133,7 @@ const BLACKLIST_PROVIDERS = [
     id: 'spfbl',
     name: 'SPFBL DNSBL',
     domain: 'dnsbl.spfbl.net',
-    description: 'Collaborative peer-to-peer blacklist designed to filter spam, malicious senders, and dynamic ranges.',
+    description: 'Collaborative peer-to-peer blacklist. Flags confirmed spam/abuse blacklists (127.0.0.2); non-blacklist NAT/dynamic/RFC informational flags are excluded.',
     delistUrl: 'https://spfbl.net/en/dnsbl/',
     category: 'Spam' as const
   },
@@ -747,7 +747,13 @@ function getResponseCodeDetails(domain: string, code: string): string {
     return 'GBUdb Truncate: Dynamic real-time spam or automated abuse listing.';
   }
   if (domain.includes('spfbl')) {
-    return 'SPFBL: Listed in peer-to-peer SMTP reputation system.';
+    switch (code) {
+      case '127.0.0.2': return 'SPFBL Blacklist (127.0.0.2): Confirmed bad reputation due to spam/abuse complaints.';
+      case '127.0.0.3': return 'SPFBL Info (127.0.0.3): MTA/RFC 5321 compliance notice (Not blacklisted).';
+      case '127.0.0.4': return 'SPFBL Info (127.0.0.4): No email service identified / NAT / dynamic IP (Not blacklisted).';
+      case '127.0.0.5': return 'SPFBL Info (127.0.0.5): Range abuse desk notice (Not blacklisted).';
+      default: return `SPFBL: Listed in peer-to-peer SMTP reputation system (${code}).`;
+    }
   }
   if (domain.includes('barracuda')) {
     return 'BRBL: Listed as a sender of spam or malicious traffic.';
@@ -1368,6 +1374,30 @@ async function checkDNSBL(ip: string, blacklistDomain: string): Promise<{
             listed: false,
             status: 'Not Listed' as const,
             details: `Hostkarma Info (${code}) - Not Blacklisted`,
+            responseCode: code,
+            txt: '',
+            responseTime,
+            timestamp: nowStr,
+            dnsServerQueried: usedServer,
+            error: false,
+            errorMessage: ''
+          };
+          dnsblCache.set(cacheKey, { result: resObj, timestamp: now });
+          return resObj;
+        }
+
+        // SPFBL DNSBL (dnsbl.spfbl.net): Only 127.0.0.2 represents an actual spam/reputation blacklist.
+        // 127.0.0.3 (RFC/MTA notice), 127.0.0.4 (Dynamic/NAT/No mail service), and 127.0.0.5 (Abuse team range note) are NOT proper blacklists.
+        if (blacklistDomain.includes('spfbl.net') && !addresses.includes('127.0.0.2')) {
+          const infoDetail =
+            code === '127.0.0.3' ? 'SPFBL Info (127.0.0.3): RFC/MTA Notice - Not Blacklisted' :
+            code === '127.0.0.4' ? 'SPFBL Info (127.0.0.4): Dynamic/No Mail Service Flag - Not Blacklisted' :
+            code === '127.0.0.5' ? 'SPFBL Info (127.0.0.5): Range Abuse Notice - Not Blacklisted' :
+            `SPFBL Info (${code}) - Not Blacklisted`;
+          const resObj = {
+            listed: false,
+            status: 'Not Listed' as const,
+            details: infoDetail,
             responseCode: code,
             txt: '',
             responseTime,
