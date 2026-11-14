@@ -198,7 +198,15 @@ const BLACKLIST_PROVIDERS = [
     name: 'SpamRats NoPtr',
     domain: 'noptr.spamrats.com',
     description: 'SpamRats NoPtr. Identifies IP addresses with invalid or missing reverse DNS (PTR) records.',
-    delistUrl: 'https://www.spamrats.com/',
+    delistUrl: 'https://www.spamrats.com/lookup.php',
+    category: 'Spam' as const
+  },
+  {
+    id: 'spamratsauth',
+    name: 'SpamRats Auth',
+    domain: 'auth.spamrats.com',
+    description: 'SpamRats Auth database. Identifies IP addresses exhibiting abusive SMTP authentication attempts or compromised mail accounts.',
+    delistUrl: 'https://www.spamrats.com/lookup.php',
     category: 'Spam' as const
   },
   {
@@ -576,10 +584,53 @@ const DNSBL_UNREACHABLE_TTL = 1 * 60 * 1000;   // 1 min TTL for temporarily Unre
 // Global pools for authoritative and fallback DNS resolvers
 const providerResolvers = new Map<string, { resolver: dns.Resolver; serverIp: string }[]>();
 
+// Known SpamRATS authoritative rbldns servers & SpamRATS-compatible public resolvers
+// Note: Parent domain spamrats.com uses ns*.linuxmagic.com which do NOT serve RBL lookups;
+// RBL zones are delegated to rbldns1-6.spamrats.com (via all.spamrats.com).
+// Also 1.1.1.1 and 8.8.8.8 frequently return ESERVFAIL/TIMEOUT for SpamRATS RBL queries.
+const SPAMRATS_AUTHORITATIVE_IPS = [
+  '50.116.2.34',
+  '172.238.39.58',
+  '104.128.145.3',
+  '139.177.192.17',
+  '72.14.188.174'
+];
+const SPAMRATS_SAFE_RECURSIVE_DNS = ['9.9.9.9', '149.112.112.112', '1.0.0.1'];
+
+function cacheProviderIpResolvers(providerId: string, ips: string[]) {
+  const uniqueIps = Array.from(new Set(ips.filter(Boolean)));
+  if (uniqueIps.length === 0) return;
+  const resolvers: { resolver: dns.Resolver; serverIp: string }[] = uniqueIps.map(ip => {
+    const res = new dns.Resolver();
+    res.setServers([ip]);
+    return { resolver: res, serverIp: ip };
+  });
+  providerResolvers.set(providerId, resolvers);
+  console.log(`[WolastShield] Successfully cached ${uniqueIps.length} authoritative NS resolvers for ${providerId}: ${uniqueIps.join(', ')}`);
+}
+
 // Initialize and cache authoritative DNS resolvers for each provider in the background
 async function initProviderResolvers() {
   console.log('[WolastShield] Initiating background authoritative NS resolution for blacklist providers...');
+
+  // Seed SpamRATS providers immediately with known rbldns IPs, then refresh from all.spamrats.com NS
+  for (const srId of ['spamrats', 'spamratsdyna', 'spamratsnoptr', 'spamratsauth']) {
+    cacheProviderIpResolvers(srId, SPAMRATS_AUTHORITATIVE_IPS);
+  }
+  try {
+    const r = new dns.Resolver();
+    r.setServers(['9.9.9.9', '1.0.0.1', '149.112.112.112']);
+    r.resolveNs('all.spamrats.com', (err, hostnames) => {
+      if (!err && hostnames && hostnames.length > 0) {
+        for (const srId of ['spamrats', 'spamratsdyna', 'spamratsnoptr', 'spamratsauth']) {
+          resolveNSHostnames(srId, hostnames, SPAMRATS_AUTHORITATIVE_IPS);
+        }
+      }
+    });
+  } catch (_) {}
+
   for (const provider of BLACKLIST_PROVIDERS) {
+    if (provider.domain.endsWith('.spamrats.com')) continue;
     try {
       dns.resolveNs(provider.domain, (err, hostnames) => {
         if (err || !hostnames || hostnames.length === 0) {
@@ -603,26 +654,30 @@ async function initProviderResolvers() {
   }
 }
 
-function resolveNSHostnames(providerId: string, hostnames: string[]) {
-  const ips: string[] = [];
+function resolveNSHostnames(providerId: string, hostnames: string[], seedIps: string[] = []) {
+  const ips: string[] = [...seedIps];
   let resolvedCount = 0;
-  
+  const fallbackResolver = new dns.Resolver();
+  fallbackResolver.setServers(['9.9.9.9', '1.1.1.1']);
+
   hostnames.forEach(host => {
     dns.resolve4(host, (err, addresses) => {
-      resolvedCount++;
       if (!err && addresses && addresses.length > 0) {
+        resolvedCount++;
         ips.push(...addresses);
-      }
-      
-      if (resolvedCount === hostnames.length && ips.length > 0) {
-        const resolvers: { resolver: dns.Resolver; serverIp: string }[] = [];
-        ips.forEach(ip => {
-          const res = new dns.Resolver();
-          res.setServers([ip]);
-          resolvers.push({ resolver: res, serverIp: ip });
+        if (resolvedCount === hostnames.length && ips.length > 0) {
+          cacheProviderIpResolvers(providerId, ips);
+        }
+      } else {
+        fallbackResolver.resolve4(host, (err2, addresses2) => {
+          resolvedCount++;
+          if (!err2 && addresses2 && addresses2.length > 0) {
+            ips.push(...addresses2);
+          }
+          if (resolvedCount === hostnames.length && ips.length > 0) {
+            cacheProviderIpResolvers(providerId, ips);
+          }
         });
-        providerResolvers.set(providerId, resolvers);
-        console.log(`[WolastShield] Successfully cached ${ips.length} authoritative NS resolvers for ${providerId}: ${ips.join(', ')}`);
       }
     });
   });
@@ -707,13 +762,28 @@ function getResponseCodeDetails(domain: string, code: string): string {
     return 'ivmSIP: Part of the Invaluement blacklist targeting high-emission spam IP addresses.';
   }
   if (domain.includes('spamrats')) {
+    if (code === '127.0.0.36' || (code === '127.0.0.2' && domain.includes('dyna'))) {
+      return `RATS-Dyna (${code}): Dynamic/residential IP range running unauthenticated SMTP.`;
+    }
+    if (code === '127.0.0.37' || (code === '127.0.0.2' && domain.includes('noptr'))) {
+      return `RATS-NoPtr (${code}): Missing, generic, or invalid reverse DNS (PTR) record.`;
+    }
+    if (code === '127.0.0.38' || (code === '127.0.0.2' && domain.includes('spam.spamrats'))) {
+      return `RATS-Spam (${code}): Detected sending spam, abusive connections, or compromised mail host.`;
+    }
+    if (code === '127.0.0.43' || (code === '127.0.0.2' && domain.includes('auth'))) {
+      return `RATS-Auth (${code}): Abusive SMTP authentication or compromised mail account.`;
+    }
     if (domain.includes('noptr')) {
-      return `SpamRats NoPtr: Listed due to missing or invalid reverse DNS (PTR) record (${code}).`;
+      return `RATS-NoPtr (${code}): Listed due to missing or invalid reverse DNS (PTR) record.`;
     }
     if (domain.includes('dyna')) {
-      return `SpamRats Dyna: Listed due to dynamic IP range running unauthenticated SMTP (${code}).`;
+      return `RATS-Dyna (${code}): Listed due to dynamic IP range running unauthenticated SMTP.`;
     }
-    return `SpamRats Spam: Listed due to suspicious connections or spam activity (${code}).`;
+    if (domain.includes('auth')) {
+      return `RATS-Auth (${code}): Listed due to abusive SMTP authentication behavior.`;
+    }
+    return `RATS-Spam (${code}): Listed due to suspicious connections or spam activity.`;
   }
   if (domain.includes('mailspike')) {
     if (domain.includes('z.mailspike')) {
@@ -778,28 +848,216 @@ function getResponseCodeDetails(domain: string, code: string): string {
   return `Listed on blacklist (${code})`;
 }
 
+// Single DNS query helper with hard timeout
+function querySingleDns(
+  serverIp: string | null,
+  lookupDomain: string,
+  method: 'resolve4' | 'resolveTxt',
+  timeoutMs: number
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      const err: any = new Error('DNS query timeout');
+      err.code = 'ETIMEOUT';
+      reject(err);
+    }, timeoutMs);
+
+    if (serverIp) {
+      const resolver = new dns.Resolver();
+      resolver.setServers([serverIp]);
+      resolver[method](lookupDomain, (err: any, data: any) => {
+        clearTimeout(t);
+        if (err) reject(err);
+        else resolve(data);
+      });
+    } else {
+      dns[method](lookupDomain, (err: any, data: any) => {
+        clearTimeout(t);
+        if (err) reject(err);
+        else resolve(data);
+      });
+    }
+  });
+}
+
+// Race a pool of DNS servers and resolve immediately on either A-record hit OR confirmed ENOTFOUND
+async function raceDnsPool(
+  servers: Array<string | null>,
+  lookupDomain: string,
+  timeoutMs = 1800
+): Promise<{ status: 'LISTED'; addresses: string[]; server: string } | { status: 'CLEAN'; server: string } | { status: 'TIMEOUT' }> {
+  if (servers.length === 0) return { status: 'TIMEOUT' };
+
+  return new Promise((resolve) => {
+    let pending = servers.length;
+    let settled = false;
+    let firstCleanServer: string | null = null;
+    let cleanTimer: NodeJS.Timeout | null = null;
+
+    const finish = (res: any) => {
+      if (settled) return;
+      settled = true;
+      if (cleanTimer) clearTimeout(cleanTimer);
+      resolve(res);
+    };
+
+    servers.forEach((srv) => {
+      const label = srv ? `Resolver (${srv})` : 'System DNS';
+      querySingleDns(srv, lookupDomain, 'resolve4', timeoutMs)
+        .then((addresses: string[]) => {
+          if (addresses && addresses.length > 0) {
+            finish({ status: 'LISTED', addresses, server: label });
+          } else {
+            pending--;
+            if (pending === 0) {
+              finish(firstCleanServer ? { status: 'CLEAN', server: firstCleanServer } : { status: 'TIMEOUT' });
+            }
+          }
+        })
+        .catch((err: any) => {
+          const code = err?.code || '';
+          if (code === 'ENOTFOUND' || code === 'ENODATA') {
+            if (!firstCleanServer) {
+              firstCleanServer = label;
+              // Give sibling servers in the pool a brief 180ms grace window in case another responds with a hit
+              cleanTimer = setTimeout(() => {
+                finish({ status: 'CLEAN', server: firstCleanServer! });
+              }, 180);
+            }
+          }
+          pending--;
+          if (pending === 0) {
+            finish(firstCleanServer ? { status: 'CLEAN', server: firstCleanServer } : { status: 'TIMEOUT' });
+          }
+        });
+    });
+  });
+}
+
+// Coalesced per-IP cache for all.spamrats.com combined RBL lookups
+interface SpamRatsCombinedEntry {
+  addresses: string[];
+  txt: string;
+  server: string;
+  clean: boolean;
+  unreachable: boolean;
+  timestamp: number;
+}
+const spamratsCombinedCache = new Map<string, SpamRatsCombinedEntry>();
+const spamratsInFlight = new Map<string, Promise<SpamRatsCombinedEntry>>();
+
+async function querySpamRatsCombined(ip: string): Promise<SpamRatsCombinedEntry> {
+  const cached = spamratsCombinedCache.get(ip);
+  const now = Date.now();
+  if (cached && now - cached.timestamp < (cached.unreachable ? 30 * 1000 : 2 * 60 * 1000)) {
+    return cached;
+  }
+  const existing = spamratsInFlight.get(ip);
+  if (existing) return existing;
+
+  const task = (async (): Promise<SpamRatsCombinedEntry> => {
+    try {
+      const reversed = reverseIP(ip);
+      const allDomain = `${reversed}.all.spamrats.com`;
+      const authPool = (providerResolvers.get('spamrats') || []).map(r => r.serverIp);
+      const primaryPool = Array.from(new Set([...SPAMRATS_SAFE_RECURSIVE_DNS, ...authPool.slice(0, 3)]));
+      const secondaryPool = Array.from(new Set([
+        ...authPool.slice(3),
+        ...SPAMRATS_AUTHORITATIVE_IPS,
+        ...systemConfig.dnsResolvers.filter(s => s !== '8.8.8.8' && s !== '8.8.4.4' && s !== '1.1.1.1'),
+        null as any
+      ]));
+
+      let res = await raceDnsPool(primaryPool, allDomain, 2200);
+      if (res.status === 'TIMEOUT') {
+        res = await raceDnsPool(secondaryPool, allDomain, 2200);
+      }
+
+      if (res.status === 'LISTED') {
+        let txt = '';
+        try {
+          txt = await resolveSpamRatsTxt(allDomain, res.server);
+        } catch (_) {}
+        const entry: SpamRatsCombinedEntry = {
+          addresses: res.addresses,
+          txt,
+          server: res.server,
+          clean: false,
+          unreachable: false,
+          timestamp: Date.now()
+        };
+        spamratsCombinedCache.set(ip, entry);
+        return entry;
+      }
+
+      if (res.status === 'CLEAN') {
+        const entry: SpamRatsCombinedEntry = {
+          addresses: [],
+          txt: '',
+          server: res.server,
+          clean: true,
+          unreachable: false,
+          timestamp: Date.now()
+        };
+        spamratsCombinedCache.set(ip, entry);
+        return entry;
+      }
+
+      const entry: SpamRatsCombinedEntry = {
+        addresses: [],
+        txt: '',
+        server: 'SpamRATS Pool',
+        clean: false,
+        unreachable: true,
+        timestamp: Date.now()
+      };
+      spamratsCombinedCache.set(ip, entry);
+      return entry;
+    } finally {
+      spamratsInFlight.delete(ip);
+    }
+  })();
+
+  spamratsInFlight.set(ip, task);
+  return task;
+}
+
+async function resolveSpamRatsTxt(lookupDomain: string, preferredServerLabel?: string): Promise<string> {
+  const preferredIpMatch = preferredServerLabel ? preferredServerLabel.match(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/) : null;
+  const preferredIp = preferredIpMatch ? preferredIpMatch[1] : '';
+  const authPool = (providerResolvers.get('spamrats') || []).map(r => r.serverIp);
+  const pool = Array.from(new Set([
+    ...(preferredIp ? [preferredIp] : []),
+    ...SPAMRATS_SAFE_RECURSIVE_DNS,
+    ...authPool,
+    ...SPAMRATS_AUTHORITATIVE_IPS
+  ]));
+  const promises = pool.map(srv =>
+    querySingleDns(srv, lookupDomain, 'resolveTxt', 2000).then((records: string[][]) => {
+      if (records && records.length > 0) return records.flat().join(' ');
+      throw new Error('Empty TXT');
+    })
+  );
+  try {
+    return await Promise.any(promises);
+  } catch (_) {
+    return '';
+  }
+}
+
 // Multi-tiered DNS resolver helper
 async function resolveDnsWithFallback(lookupDomain: string, providerId: string): Promise<{ addresses: string[]; server: string }> {
-  // Tier 1: Try authoritative name servers
+  // Tier 1: Try authoritative name servers (up to 4)
   const authResolvers = providerResolvers.get(providerId);
   if (authResolvers && authResolvers.length > 0) {
-    const promises = authResolvers.slice(0, 2).map(({ resolver, serverIp }) => {
-      return new Promise<{ addresses: string[]; server: string }>((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error('Timeout')), 800);
-        resolver.resolve4(lookupDomain, (err, addresses) => {
-          clearTimeout(t);
-          if (err) reject(err);
-          else resolve({ addresses, server: `Authoritative NS (${serverIp})` });
-        });
-      });
-    });
-    try {
-      const result = await Promise.any(promises);
-      if (result && result.addresses.length > 0) {
-        return result;
-      }
-    } catch (e) {
-      // Fall through on authoritative NS failures
+    const authRes = await raceDnsPool(authResolvers.slice(0, 4).map(r => r.serverIp), lookupDomain, 1600);
+    if (authRes.status === 'LISTED') {
+      return { addresses: authRes.addresses, server: `Authoritative NS (${authRes.server.replace('Resolver (', '').replace(')', '')})` };
+    }
+    if (authRes.status === 'CLEAN') {
+      const err: any = new Error('NXDOMAIN');
+      err.code = 'ENOTFOUND';
+      throw err;
     }
   }
 
@@ -808,52 +1066,38 @@ async function resolveDnsWithFallback(lookupDomain: string, providerId: string):
     ? systemConfig.dnsResolvers
     : ['1.1.1.1', '8.8.8.8', '9.9.9.9'];
 
-  const fallbackPromises = resolversToTry.map(fallback => {
-    return new Promise<{ addresses: string[]; server: string }>((resolve, reject) => {
-      const resolver = new dns.Resolver();
-      resolver.setServers([fallback]);
-      const t = setTimeout(() => reject(new Error('Timeout')), 800);
-      resolver.resolve4(lookupDomain, (err, addresses) => {
-        clearTimeout(t);
-        if (err) reject(err);
-        else resolve({ addresses, server: `Resolver (${fallback})` });
-      });
-    });
-  });
-
-  try {
-    const result = await Promise.any(fallbackPromises);
-    if (result && result.addresses.length > 0) {
-      return result;
-    }
-  } catch (e) {
-    // Fall through
+  const fallbackRes = await raceDnsPool(resolversToTry, lookupDomain, 1600);
+  if (fallbackRes.status === 'LISTED') {
+    return { addresses: fallbackRes.addresses, server: fallbackRes.server };
+  }
+  if (fallbackRes.status === 'CLEAN') {
+    const err: any = new Error('NXDOMAIN');
+    err.code = 'ENOTFOUND';
+    throw err;
   }
 
   // Tier 3: Standard Node.js DNS resolve fallback
-  return new Promise<{ addresses: string[]; server: string }>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('Timeout')), 800);
-    dns.resolve4(lookupDomain, (err, addresses) => {
-      clearTimeout(t);
-      if (err) reject(err);
-      else resolve({ addresses, server: 'System DNS' });
-    });
-  });
+  const addresses = await querySingleDns(null, lookupDomain, 'resolve4', 1800);
+  return { addresses, server: 'System DNS' };
 }
 
 // Multi-tiered DNS TXT resolver helper
 async function resolveTxtWithFallback(lookupDomain: string, providerId: string): Promise<string> {
+  if (lookupDomain.endsWith('.spamrats.com')) {
+    return resolveSpamRatsTxt(lookupDomain);
+  }
+
   const authResolvers = providerResolvers.get(providerId);
   if (authResolvers && authResolvers.length > 0) {
     try {
-      const records = await new Promise<string[][]>((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error('Timeout')), 800);
-        authResolvers[0].resolver.resolveTxt(lookupDomain, (err, records) => {
-          clearTimeout(t);
-          if (err) reject(err);
-          else resolve(records);
-        });
-      });
+      const records = await Promise.any(
+        authResolvers.slice(0, 3).map(ar =>
+          querySingleDns(ar.serverIp, lookupDomain, 'resolveTxt', 1600).then((recs: string[][]) => {
+            if (recs && recs.length > 0) return recs;
+            throw new Error('Empty TXT');
+          })
+        )
+      );
       if (records && records.length > 0) {
         return records.flat().join(' ');
       }
@@ -865,21 +1109,15 @@ async function resolveTxtWithFallback(lookupDomain: string, providerId: string):
     ? systemConfig.dnsResolvers
     : ['1.1.1.1', '8.8.8.8', '9.9.9.9'];
 
-  const fallbackTxtPromises = resolversToTry.map(fallback => {
-    return new Promise<string[][]>((resolve, reject) => {
-      const resolver = new dns.Resolver();
-      resolver.setServers([fallback]);
-      const t = setTimeout(() => reject(new Error('Timeout')), 800);
-      resolver.resolveTxt(lookupDomain, (err, records) => {
-        clearTimeout(t);
-        if (err) reject(err);
-        else resolve(records);
-      });
-    });
-  });
-
   try {
-    const records = await Promise.any(fallbackTxtPromises);
+    const records = await Promise.any(
+      resolversToTry.map(fallback =>
+        querySingleDns(fallback, lookupDomain, 'resolveTxt', 1600).then((recs: string[][]) => {
+          if (recs && recs.length > 0) return recs;
+          throw new Error('Empty TXT');
+        })
+      )
+    );
     if (records && records.length > 0) {
       return records.flat().join(' ');
     }
@@ -922,6 +1160,130 @@ async function checkDNSBL(ip: string, blacklistDomain: string): Promise<{
   const provider = BLACKLIST_PROVIDERS.find(p => p.domain === blacklistDomain);
   const providerId = provider ? provider.id : '';
   const nowStr = new Date().toISOString();
+
+  // Dedicated high-reliability SpamRATS handler using combined all.spamrats.com + direct zone fallback
+  if (blacklistDomain.endsWith('.spamrats.com')) {
+    const zoneExpectedCode: Record<string, string> = {
+      'dyna.spamrats.com': '127.0.0.36',
+      'noptr.spamrats.com': '127.0.0.37',
+      'spam.spamrats.com': '127.0.0.38',
+      'auth.spamrats.com': '127.0.0.43'
+    };
+    const expectedCode = zoneExpectedCode[blacklistDomain];
+
+    try {
+      const combined = await querySpamRatsCombined(ip);
+      let matchedCode: string | null = null;
+      let matchedServer = combined.server;
+      let zoneTxt = combined.txt;
+
+      if (!combined.unreachable && combined.addresses.length > 0 && expectedCode) {
+        if (combined.addresses.includes(expectedCode)) {
+          matchedCode = expectedCode;
+        }
+      }
+
+      // Direct sub-zone verification if all.spamrats.com timed out or returned generic 127.0.0.2 without specific subcode
+      if (!matchedCode && (combined.unreachable || (combined.addresses.length > 0 && !combined.addresses.some(c => ['127.0.0.36', '127.0.0.37', '127.0.0.38', '127.0.0.43'].includes(c))))) {
+        const authPool = (providerResolvers.get(providerId) || []).map(r => r.serverIp);
+        const directPool = Array.from(new Set([...SPAMRATS_SAFE_RECURSIVE_DNS, ...authPool.slice(0, 3), ...SPAMRATS_AUTHORITATIVE_IPS]));
+        let directRes = await raceDnsPool(directPool.slice(0, 4), lookupDomain, 2000);
+        if (directRes.status === 'TIMEOUT') {
+          directRes = await raceDnsPool(directPool.slice(4), lookupDomain, 2000);
+        }
+        if (directRes.status === 'LISTED') {
+          const validCodes = directRes.addresses.filter(a => a.startsWith('127.') && a !== '127.0.0.1' && !a.startsWith('127.255.'));
+          if (validCodes.length > 0) {
+            matchedCode = (expectedCode && validCodes.includes(expectedCode)) ? expectedCode : validCodes[0];
+            matchedServer = directRes.server;
+          }
+        } else if (directRes.status === 'CLEAN') {
+          const resObj = {
+            listed: false,
+            status: 'Not Listed' as const,
+            details: 'Not Listed',
+            responseCode: 'NXDOMAIN',
+            txt: '',
+            responseTime: Date.now() - startTime,
+            timestamp: nowStr,
+            dnsServerQueried: directRes.server,
+            error: false,
+            errorMessage: ''
+          };
+          dnsblCache.set(cacheKey, { result: resObj, timestamp: now });
+          return resObj;
+        } else if (combined.unreachable) {
+          const resObj = {
+            listed: false,
+            status: 'Unreachable' as const,
+            details: 'SpamRATS DNSBL Timeout / Rate-Limited (Retry Recommended)',
+            responseCode: 'TIMEOUT',
+            txt: '',
+            responseTime: Date.now() - startTime,
+            timestamp: nowStr,
+            dnsServerQueried: matchedServer,
+            error: true,
+            errorMessage: 'DNSBL query timed out across SpamRATS resolvers'
+          };
+          dnsblCache.set(cacheKey, { result: resObj, timestamp: now });
+          return resObj;
+        }
+      }
+
+      if (matchedCode) {
+        if (!zoneTxt) {
+          const directTxt = await resolveSpamRatsTxt(lookupDomain, matchedServer);
+          if (directTxt) zoneTxt = directTxt;
+        }
+        const effectiveTxt = zoneTxt || `SpamRATS Record ${matchedCode} - See: https://www.spamrats.com/lookup.php?ip=${ip}`;
+        const defaultDetail = getResponseCodeDetails(blacklistDomain, matchedCode);
+        const resObj = {
+          listed: true,
+          status: 'Listed' as const,
+          details: `${defaultDetail} | TXT: ${effectiveTxt}`,
+          responseCode: matchedCode,
+          txt: effectiveTxt,
+          responseTime: Date.now() - startTime,
+          timestamp: nowStr,
+          dnsServerQueried: matchedServer,
+          error: false,
+          errorMessage: ''
+        };
+        dnsblCache.set(cacheKey, { result: resObj, timestamp: now });
+        return resObj;
+      }
+
+      const resObj = {
+        listed: false,
+        status: 'Not Listed' as const,
+        details: 'Not Listed',
+        responseCode: 'NXDOMAIN',
+        txt: '',
+        responseTime: Date.now() - startTime,
+        timestamp: nowStr,
+        dnsServerQueried: matchedServer,
+        error: false,
+        errorMessage: ''
+      };
+      dnsblCache.set(cacheKey, { result: resObj, timestamp: now });
+      return resObj;
+    } catch (srErr: any) {
+      const resObj = {
+        listed: false,
+        status: 'Unreachable' as const,
+        details: `SpamRATS Query Error: ${srErr?.message || 'Timeout'}`,
+        responseCode: 'TIMEOUT',
+        txt: '',
+        responseTime: Date.now() - startTime,
+        timestamp: nowStr,
+        dnsServerQueried: 'SpamRATS Pool',
+        error: true,
+        errorMessage: srErr?.message || 'Timeout'
+      };
+      dnsblCache.set(cacheKey, { result: resObj, timestamp: now });
+      return resObj;
+    }
+  }
 
   let retries = 1;
   let lastError: any = null;
@@ -1283,9 +1645,10 @@ function getRecommendedAction(providerId: string, providerName: string, isListed
     psbl: "1. Ensure no mail is sent to unverified or purchased lists. 2. Submit self-service removal request on psbl.org.",
     wpbl: "1. Stop spam emissions and request automated IP removal at wpbl.info.",
     ivmsip: "1. Investigate snowshoe or high-volume spam patterns. 2. Contact Invaluement support for delisting review.",
-    spamratsdyna: "1. Do not send direct mail from dynamic broadband IPs. Use an authenticated SMTP relay service.",
-    spamrats: "1. Fix reverse DNS (PTR) record or invalid HELO name. 2. Request removal on spamrats.com.",
-    spamratsnoptr: "1. Configure a valid PTR (Reverse DNS) record pointing to your mail server's domain name. 2. Request delisting on spamrats.com.",
+    spamratsdyna: "1. Do not send direct mail from dynamic broadband IPs. Use an authenticated SMTP relay service. 2. Check & delist at https://www.spamrats.com/lookup.php.",
+    spamrats: "1. Fix reverse DNS (PTR) record, invalid HELO name, or compromised mail script. 2. Request removal at https://www.spamrats.com/lookup.php.",
+    spamratsnoptr: "1. Configure a valid FQDN PTR (Reverse DNS) record pointing to your mail server's domain name. 2. Request delisting at https://www.spamrats.com/lookup.php.",
+    spamratsauth: "1. Audit SMTP SASL auth logs for compromised mailboxes or brute-force attempts and rotate passwords. 2. Request delisting at https://www.spamrats.com/lookup.php.",
     mailspikebl: "1. Improve sender reputation by reducing bounce rates and spam reports. 2. Request review on mailspike.org.",
     mailspikez: "1. Isolate compromised workstation or botnet endpoint on the network.",
     hostkarma: "1. Check SMTP server security and rDNS settings. 2. Request re-evaluation on junkemailfilter.com.",
@@ -1609,11 +1972,21 @@ function generateSimulatedScan(ips: string[]): any[] {
           responseCode = '127.0.0.2';
           details = getResponseCodeDetails(provider.domain, responseCode);
           txt = 'GBUdb: High volume automated abuse activity.';
+        } else if (provider.id === 'spamrats' && (sum % 10 === 0)) {
+          isListed = true;
+          responseCode = '127.0.0.38';
+          details = getResponseCodeDetails(provider.domain, responseCode);
+          txt = `SPAMRATS IP Addresses See: https://www.spamrats.com/lookup.php?ip=${ip}`;
         } else if (provider.id === 'spamratsnoptr' && (sum % 11 === 0)) {
           isListed = true;
-          responseCode = '127.0.0.2';
+          responseCode = '127.0.0.37';
           details = getResponseCodeDetails(provider.domain, responseCode);
-          txt = 'SpamRats: Reverse DNS pointer (PTR) record missing or invalid.';
+          txt = `SpamRats: Reverse DNS pointer (PTR) record missing or invalid. See: https://www.spamrats.com/lookup.php?ip=${ip}`;
+        } else if (provider.id === 'spamratsauth' && (sum % 17 === 0)) {
+          isListed = true;
+          responseCode = '127.0.0.43';
+          details = getResponseCodeDetails(provider.domain, responseCode);
+          txt = `SpamRats Auth: Abusive SMTP authentication detected. See: https://www.spamrats.com/lookup.php?ip=${ip}`;
         } else if (provider.id === 'mailspikebl' && (sum % 12 === 0)) {
           isListed = true;
           responseCode = '127.0.0.2';
@@ -1816,8 +2189,11 @@ app.get("/api/diagnose", async (req, res) => {
       // Ignore text lookup error on diagnostic level
     }
 
-    // 2. Configured Custom/Private DNS Resolver
-    const customResolverIp = systemConfig.dnsResolvers[0] || '1.1.1.1';
+    // 2. Configured Custom/Private DNS Resolver (use Quad9 9.9.9.9 for SpamRATS when primary is 1.1.1.1/8.8.8.8)
+    const defaultCustom = systemConfig.dnsResolvers[0] || '1.1.1.1';
+    const customResolverIp = (provider.domain.endsWith('.spamrats.com') && (defaultCustom === '1.1.1.1' || defaultCustom === '8.8.8.8'))
+      ? '9.9.9.9'
+      : defaultCustom;
     result.publicResolver.resolverIp = customResolverIp;
     try {
       const publicResolver = new dns.Resolver();
@@ -1861,36 +2237,24 @@ app.get("/api/diagnose", async (req, res) => {
     // 3. Authoritative DNS resolver, if we resolved and cached any
     const authResolvers = providerResolvers.get(provider.id);
     if (authResolvers && authResolvers.length > 0) {
-      try {
-        const authA = await new Promise<string[]>((resolve, reject) => {
-          const t = setTimeout(() => reject(new Error('Timeout after 2s')), 2000);
-          authResolvers[0].resolver.resolve4(lookupDomain, (err, addresses) => {
-            clearTimeout(t);
-            if (err) reject(err);
-            else resolve(addresses);
-          });
-        });
-        result.authoritativeResolver.a = authA;
+      const authRes = await raceDnsPool(authResolvers.slice(0, 4).map(r => r.serverIp), lookupDomain, 2000);
+      if (authRes.status === 'LISTED') {
+        result.authoritativeResolver.a = authRes.addresses;
         result.authoritativeResolver.status = 'success';
-      } catch (err: any) {
-        if (err.code === 'ENOTFOUND' || err.code === 'ENODATA') {
-          result.authoritativeResolver.a = [];
-          result.authoritativeResolver.status = 'success';
-        } else {
-          result.authoritativeResolver.error = err.code || err.message;
-          result.authoritativeResolver.status = 'error';
-        }
+      } else if (authRes.status === 'CLEAN') {
+        result.authoritativeResolver.a = [];
+        result.authoritativeResolver.status = 'success';
+      } else {
+        result.authoritativeResolver.error = 'TIMEOUT';
+        result.authoritativeResolver.status = 'error';
       }
 
       try {
-        const authTxt = await new Promise<string[][]>((resolve, reject) => {
-          const t = setTimeout(() => reject(new Error('Timeout after 2s')), 2000);
-          authResolvers[0].resolver.resolveTxt(lookupDomain, (err, records) => {
-            clearTimeout(t);
-            if (err) reject(err);
-            else resolve(records);
-          });
-        });
+        const authTxt = await Promise.any(
+          authResolvers.slice(0, 3).map(ar =>
+            querySingleDns(ar.serverIp, lookupDomain, 'resolveTxt', 1800)
+          )
+        );
         result.authoritativeResolver.txt = authTxt.flat().join(' ');
       } catch (err: any) {
         // Ignore text error
@@ -2000,7 +2364,7 @@ app.post("/api/scan", async (req, res) => {
               const isListed = check.listed;
               const statusStr = isListed ? 'LISTED' : (check.status === 'Unreachable' ? 'UNREACHABLE' : 'NOT LISTED');
               const reasonStr = isListed
-                ? (check.txt ? `${check.details} | TXT: ${check.txt}` : check.details)
+                ? (check.txt && !check.details.includes(check.txt) ? `${check.details} | TXT: ${check.txt}` : check.details)
                 : `Clean - Not listed in ${providerDomain}`;
               const refUrl = provider?.delistUrl || (providerDomain ? `https://${providerDomain}` : 'https://www.spamhaus.org/lookup/');
               const actionStr = getRecommendedAction(check.id, providerName, isListed, check.txt || check.details);
