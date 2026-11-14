@@ -185,7 +185,15 @@ export const BLACKLIST_PROVIDERS: BlacklistProvider[] = [
     name: 'SpamRats NoPtr',
     domain: 'noptr.spamrats.com',
     description: 'SpamRats NoPtr. Identifies IP addresses with invalid or missing reverse DNS (PTR) records.',
-    delistUrl: 'https://www.spamrats.com/',
+    delistUrl: 'https://www.spamrats.com/lookup.php',
+    category: 'Spam'
+  },
+  {
+    id: 'spamratsauth',
+    name: 'SpamRats Auth',
+    domain: 'auth.spamrats.com',
+    description: 'SpamRats Auth database. Identifies IP addresses exhibiting abusive SMTP authentication attempts or compromised mail accounts.',
+    delistUrl: 'https://www.spamrats.com/lookup.php',
     category: 'Spam'
   },
   {
@@ -705,16 +713,16 @@ const BLACKLIST_GUIDES: Record<string, { name: string; url: string; steps: strin
     ]
   },
   spamrats: {
-    name: 'SpamRats Spam & Dyna',
-    url: 'https://www.spamrats.com/',
+    name: 'SpamRats (Spam / Dyna / NoPTR / Auth)',
+    url: 'https://www.spamrats.com/lookup.php',
     category: 'DNSBL Standard',
-    description: 'SpamRats detects mail-sending IP addresses that violate basic setup standards, emit spam, or have bad reverse DNS settings.',
+    description: 'SpamRats detects mail-sending IP addresses that emit spam (127.0.0.38), use dynamic IPs (127.0.0.36), have missing/invalid PTR (127.0.0.37), or show abusive SMTP auth (127.0.0.43).',
     steps: [
-      'Go to the SpamRats lookup tool to check your listing details.',
-      'Check if your IP address is flagged under RATS-Spam (active spam emitting), RATS-Dyna (dynamic IP range), or RATS-NoPTR (missing or invalid reverse DNS).',
-      'Set up a valid, fully qualified domain name (FQDN) as your reverse DNS (PTR) record.',
-      'Audit your server to ensure it is not acting as an open SMTP relay or open proxy.',
-      'Submit a delisting request via the SpamRats removal mechanism once configuration errors are resolved.'
+      'Go to https://www.spamrats.com/lookup.php to check your IP listing details and exact return code.',
+      'Check whether your IP is flagged under RATS-Spam (127.0.0.38), RATS-Dyna (127.0.0.36), RATS-NoPTR (127.0.0.37), or RATS-Auth (127.0.0.43).',
+      'Set up a valid, fully qualified domain name (FQDN) as your reverse DNS (PTR) record matching your mail HELO.',
+      'Audit your server to ensure no compromised accounts, open SMTP relays, or SMTP auth brute-force leaks exist.',
+      'Submit a delisting request via the SpamRats removal form once configuration errors are resolved.'
     ]
   },
   blocklist: {
@@ -2555,7 +2563,14 @@ export default function App() {
                                 .map((provider) => {
                                   const listingData = (selectedIP.listings as any)?.[provider.id] || {};
                                   const isListed = listingData.listed || listingData.status === 'LISTED' || listingData.status === 'Listed';
-                                  const reasonStr = isListed ? (listingData.details || `${selectedIP.ip} is flagged in database`) : 'Clean - Host IP in good standing';
+                                  const isUnreachable = !isListed && (listingData.status === 'UNREACHABLE' || listingData.status === 'Unreachable');
+                                  const reasonStr = isListed
+                                    ? (listingData.details || `${selectedIP.ip} is flagged in database`)
+                                    : isUnreachable
+                                    ? (listingData.details || 'DNSBL query timed out — retry scan to verify')
+                                    : 'Clean - Host IP in good standing';
+                                  const responseCode = listingData.responseCode && listingData.responseCode !== 'NXDOMAIN' ? listingData.responseCode : '';
+                                  const txtRecord = listingData.txt || '';
                                   const ttlVal = listingData.ttl || 2100;
                                   const latency = listingData.responseTime || (provider.id === 'hostkarma' ? 260 : (provider.id === 'ivmsip' ? 7 : (provider.id === 'zerospam' ? 82 : 45)));
                                   const delistUrl = provider.delistUrl || (provider.domain ? `https://${provider.domain}` : 'https://www.spamhaus.org/lookup/');
@@ -2563,7 +2578,7 @@ export default function App() {
                                   return (
                                     <tr 
                                       key={provider.id}
-                                      className={`hover:bg-slate-50 transition-colors ${isListed ? 'bg-rose-50/40' : ''}`}
+                                      className={`hover:bg-slate-50 transition-colors ${isListed ? 'bg-rose-50/40' : isUnreachable ? 'bg-amber-50/40' : ''}`}
                                     >
                                       <td className="py-3 px-4">
                                         {isListed ? (
@@ -2572,6 +2587,11 @@ export default function App() {
                                               ✕
                                             </span>
                                             LISTED
+                                          </span>
+                                        ) : isUnreachable ? (
+                                          <span className="inline-flex items-center gap-1.5 text-amber-700 font-extrabold text-[11px] uppercase">
+                                            <AlertTriangle className="w-4 h-4 text-amber-600" />
+                                            TIMEOUT
                                           </span>
                                         ) : (
                                           <span className="inline-flex items-center gap-1.5 text-emerald-700 font-extrabold text-[11px] uppercase">
@@ -2598,7 +2618,21 @@ export default function App() {
                                         </span>
                                       </td>
                                       <td className="py-3 px-4 text-slate-700 font-medium">
-                                        <span className="truncate max-w-xs block">{reasonStr}</span>
+                                        <div className="space-y-1 max-w-md" title={reasonStr}>
+                                          <div className="flex flex-wrap items-center gap-1.5">
+                                            {isListed && responseCode && (
+                                              <span className="inline-block font-mono text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-200 px-1.5 py-0.5 rounded">
+                                                {responseCode}
+                                              </span>
+                                            )}
+                                            <span className="break-words leading-snug">{reasonStr}</span>
+                                          </div>
+                                          {isListed && txtRecord && !reasonStr.includes(txtRecord) && (
+                                            <span className="block text-[10px] font-mono text-slate-500 break-all">
+                                              TXT: {txtRecord}
+                                            </span>
+                                          )}
+                                        </div>
                                       </td>
                                       <td className="py-3 px-4 font-mono font-bold text-slate-600">
                                         {isListed ? ttlVal : '-'}
