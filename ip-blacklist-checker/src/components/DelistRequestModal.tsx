@@ -67,6 +67,9 @@ const PROVIDER_METADATA: Record<string, { email: string; avgTime: string; priori
   ivmsip: { email: 'removal@invaluement.com', avgTime: '4 - 12 hours', priority: 'critical' },
   ivmuri: { email: 'removal@invaluement.com', avgTime: '4 - 12 hours', priority: 'high' },
   spamrats: { email: 'removal@spamrats.com', avgTime: 'Portal lookup', priority: 'medium' },
+  spamratsdyna: { email: 'removal@spamrats.com', avgTime: 'Portal lookup', priority: 'medium' },
+  spamratsnoptr: { email: 'removal@spamrats.com', avgTime: 'Portal lookup', priority: 'medium' },
+  spamratsauth: { email: 'removal@spamrats.com', avgTime: 'Portal lookup', priority: 'medium' },
   abuseat_cbl: { email: 'cbl@abuseat.org', avgTime: 'Instant portal', priority: 'critical' },
   hostkarma: { email: 'support@junkemailfilter.com', avgTime: '1 - 3 days', priority: 'medium' },
   nixspam: { email: 'abuse@nixspam.net', avgTime: 'Dynamic decay', priority: 'medium' },
@@ -154,7 +157,11 @@ const ALL_DEFAULT_PROVIDERS = [
   { id: 'dronebl', name: 'DroneBL', domain: 'dnsbl.dronebl.org', delistUrl: 'https://dronebl.org/lookup', delistEmail: 'staff@dronebl.org' },
   { id: 'blocklist', name: 'Blocklist.de', domain: 'bl.blocklist.de', delistUrl: 'https://www.blocklist.de/en/delist.html', delistEmail: 'info@blocklist.de' },
   { id: 'lashback', name: 'LashBack UBL', domain: 'ubl.unsubscore.com', delistUrl: 'https://www.lashback.com/support/ubl_removal.html', delistEmail: 'removal@lashback.com' },
-  { id: 'abuseat_cbl', name: 'Abuseat CBL', domain: 'cbl.abuseat.org', delistUrl: 'https://www.abuseat.org/lookup.cgi', delistEmail: 'cbl@abuseat.org' }
+  { id: 'abuseat_cbl', name: 'Abuseat CBL', domain: 'cbl.abuseat.org', delistUrl: 'https://www.abuseat.org/lookup.cgi', delistEmail: 'cbl@abuseat.org' },
+  { id: 'spamrats', name: 'SpamRats Spam', domain: 'spam.spamrats.com', delistUrl: 'https://www.spamrats.com/lookup.php', delistEmail: 'removal@spamrats.com' },
+  { id: 'spamratsdyna', name: 'SpamRats Dyna', domain: 'dyna.spamrats.com', delistUrl: 'https://www.spamrats.com/lookup.php', delistEmail: 'removal@spamrats.com' },
+  { id: 'spamratsnoptr', name: 'SpamRats NoPtr', domain: 'noptr.spamrats.com', delistUrl: 'https://www.spamrats.com/lookup.php', delistEmail: 'removal@spamrats.com' },
+  { id: 'spamratsauth', name: 'SpamRats Auth', domain: 'auth.spamrats.com', delistUrl: 'https://www.spamrats.com/lookup.php', delistEmail: 'removal@spamrats.com' }
 ];
 
 export function DelistRequestModal({
