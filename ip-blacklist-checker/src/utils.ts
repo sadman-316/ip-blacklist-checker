@@ -29,7 +29,8 @@ function getListedProvidersLabel(listings: Record<string, any> | undefined): str
     .map(([key, value]: any) => {
       const name = value?.name || key;
       const db = value?.database ? ` (${value.database})` : "";
-      return `${name}${db}`;
+      const code = value?.responseCode && value.responseCode !== "NXDOMAIN" ? ` [${value.responseCode}]` : "";
+      return `${name}${db}${code}`;
     });
   return active.length > 0 ? active.join("; ") : "None";
 }
@@ -365,3 +366,4 @@ export function downloadDailyReportJSON(report: DailyReport) {
   const sanitizedDate = (report.date || "audit").replace(/[\/.:\s-]/g, "_");
   triggerFileDownload(jsonContent, `daily_audit_report_${sanitizedDate}.json`, "application/json");
 }
+
