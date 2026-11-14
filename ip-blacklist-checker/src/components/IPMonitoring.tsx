@@ -2140,7 +2140,11 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
                           paginatedViewIPs.map((ipItem, idx) => {
                             const activeDbs = Object.entries(ipItem.listings || {})
                               .filter(([_, value]: any) => value && value.listed)
-                              .map(([key, value]: any) => value.name || key);
+                              .map(([key, value]: any) => ({
+                                label: value.name || key,
+                                code: value.responseCode && value.responseCode !== "NXDOMAIN" ? value.responseCode : "",
+                                title: value.details || value.txt || value.name || key
+                              }));
 
                             return (
                               <tr key={idx} className="hover:bg-slate-50/70 transition-colors">
@@ -2162,10 +2166,14 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
                                 </td>
                                 <td className="py-3 px-4">
                                   {activeDbs.length > 0 ? (
-                                    <div className="flex flex-wrap gap-1 max-w-xs">
-                                      {activeDbs.map((dbName, dbIdx) => (
-                                        <span key={dbIdx} className="text-[9px] font-black bg-rose-100 border border-rose-200 text-rose-800 px-1.5 py-0.5 rounded uppercase">
-                                          {dbName}
+                                    <div className="flex flex-wrap gap-1 max-w-sm">
+                                      {activeDbs.map((db, dbIdx) => (
+                                        <span
+                                          key={dbIdx}
+                                          title={db.title}
+                                          className="text-[9px] font-black bg-rose-100 border border-rose-200 text-rose-800 px-1.5 py-0.5 rounded uppercase"
+                                        >
+                                          {db.label}{db.code ? ` (${db.code})` : ""}
                                         </span>
                                       ))}
                                     </div>
@@ -2333,7 +2341,11 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
                           {selectedReport.blacklistedIPs.map((bItem, bIdx) => {
                             const dbs = Object.entries(bItem.listings || {})
                               .filter(([_, v]: any) => v && v.listed)
-                              .map(([k, _]) => k);
+                              .map(([k, v]: any) => ({
+                                label: v?.name || k,
+                                code: v?.responseCode && v.responseCode !== "NXDOMAIN" ? v.responseCode : "",
+                                title: v?.details || v?.txt || k
+                              }));
 
                             return (
                               <tr key={bIdx} className="hover:bg-slate-50">
@@ -2344,9 +2356,13 @@ export const IPMonitoring: React.FC<IPMonitoringProps> = ({ currentUser, trigger
                                 </td>
                                 <td className="py-3 px-4">
                                   <div className="flex flex-wrap gap-1">
-                                    {dbs.map((dbName, idx) => (
-                                      <span key={idx} className="text-[9px] font-black bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded uppercase border border-rose-200">
-                                        {dbName}
+                                    {dbs.map((db, idx) => (
+                                      <span
+                                        key={idx}
+                                        title={db.title}
+                                        className="text-[9px] font-black bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded uppercase border border-rose-200"
+                                      >
+                                        {db.label}{db.code ? ` (${db.code})` : ""}
                                       </span>
                                     ))}
                                   </div>
